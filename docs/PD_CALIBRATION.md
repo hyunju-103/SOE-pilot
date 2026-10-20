@@ -4,7 +4,7 @@
 
 - **Monte Carlo:** full logistic PD for **every** simulated Z-EM, not rating jumps and not a rating-plus-tail hybrid. Both the Python Streamlit and the JavaScript/HTML Monte Carlo paths enforce this, regardless of the deterministic scenario PD selector.
 - **Single scenarios:** original choices and original default rating method are preserved. The Expected Fiscal Cost tab is unchanged.
-- **Materialisation:** existing first-default draw and EAD × LGD loss logic is retained, not rewritten.
+- **Expected fiscal risk only (John's follow-up):** Bernoulli default draws and realised-loss outputs are removed from the Monte Carlo computation, dashboard and exports; outcomes remain expected fiscal cost, not realisations. A missed debt-service flag affects financial state but does **not** override Monte Carlo logistic PD with 100%.
 
 ## Formula and calibration
 
@@ -28,8 +28,8 @@ Key anchors:
 ## Important implementation limits
 
 1. The Monte Carlo PD curve is endogenous to each drawn financial path **via its year-specific Z-EM**. This is a structural score-to-PD mapping, not a causal/default-data-estimated model.
-2. If the cash waterfall records a missed debt payment, `pd_on_default` (default 100%) overrides logistic PD. The materialised loss is model-defined, not a confirmed government obligation.
-3. Multi-year default draws use the first year that an independent uniform random draw falls below that year's conditional PD. Interpret subsequent years accordingly; defaulted paths are not repeatedly counted as new defaults.
+2. In Monte Carlo, a cash waterfall missed-debt flag does **not** override the logistic PD. The simulated Z-EM remains the sole input to the PD curve. Deterministic views keep their original missed-debt override.
+3. No actual defaults or realised losses are simulated. The percentiles reported are percentiles of **EFC across shocked paths**; they are not quantiles of realised government transfers.
 4. Strong calibration requires externally sourced historical default frequency estimates, a rating cohort horizon, and country/SOE validation. The current rating-to-Z proxies cannot uniquely establish a credible statistical relationship.
 5. Changing calibration coefficients in `config.py` updates the JavaScript engine through its injected CFG, but the CSV must be regenerated using `scripts/calibrate_pd.py` for consistent documentation.
 6. PD/EFC charts in existing slide decks and deterministic EFC pages are **not** automatically updated by this Monte Carlo-only change.

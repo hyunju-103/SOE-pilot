@@ -12,8 +12,7 @@ Run:  python tests/check_waterfall_v2.py
 6. Coverage, compliance, start year and ramp-up: the routed share is left
    unpaid, the rest is borrowed.
 7. Late-payment interest by tier.
-8. Missed debt service = default (an option, off by default): rated D, PD on
-   default 100% or 40%; off, the rating follows Z-EM.
+8. Missed debt service = default: rated D, PD on default 100% or 40%; off.
 9. State receivable outside current assets lowers X1.
 10. Cost-recovery ratio and the State share of the tariff gap.
 11. Collection rates by segment: customer arrears.
@@ -21,12 +20,9 @@ Run:  python tests/check_waterfall_v2.py
 13. Refinancing in a later year, and only once the rating allows it.
 14. Balance-sheet identity (assets = liabilities + equity) under random
     combinations of all the new settings.
-15. PD methods: rating bands, the continuous rating curve (band PD at each
-    band's middle, no jump at a band edge, past 40% below D), the logistic fitted
-    to the band table, user; cumulative PD.
-16. Monte Carlo: the continuous rating curve by default (mc_pd_method); default
-    draws off by default, and when switched on the shock draws are unchanged,
-    P(default) and the realised cost are right; the JS engine agrees.
+15. PD methods: rating bands, logistic tail, logistic, user; cumulative PD.
+16. Monte Carlo uses full logistic PD and expected fiscal cost only; no default
+    events or realised costs in Python or JavaScript.
 """
 
 import json
@@ -190,16 +186,14 @@ def main():
     g = run(-400.0, dict(wf, late_rate_priority=0.12, late_rate_debt=0.15), H=2)
     check("7 priority and debt", g["Late-payment Interest"].iloc[2], 0.12 * 190.0 + 0.15 * 40.0)
 
-    # 8. missed debt service = default (option, off by default)
-    check("8 off by default", run(-250.0, wf)["Debt Default"].iloc[1], 0.0)
-    wf_d = dict(wf, default_on_missed_debt=1.0)
-    g = shocks.add_cost(run(-250.0, wf_d, H=2), 70, 1.0, wf_d)
+    # 8. missed debt service = default
+    g = shocks.add_cost(run(-250.0, wf, H=2), 70, 1.0, wf)
     check("8 debt arrears", g["Missed Debt Service"].iloc[1], 40.0)
     check("8 rated D", g["Rating"].iloc[1], "D")
     check("8 default flag", g["Debt Default"].iloc[1], 1.0)
     check("8 PD on default", g["PD"].iloc[1], 1.0)
     check("8 EFC = EAD x LGD", g["EFC"].iloc[1], g["Total Liabilities"].iloc[1] * 0.7)
-    check("8 PD on default 40%", shocks.add_cost(run(-250.0, wf_d), 70, 1.0, dict(wf_d, pd_on_default=0.4))["PD"].iloc[1], 0.4)
+    check("8 PD on default 40%", shocks.add_cost(run(-250.0, wf), 70, 1.0, dict(wf, pd_on_default=0.4))["PD"].iloc[1], 0.4)
     g = run(-250.0, dict(wf, default_on_missed_debt=0.0))
     check("8 off: no flag", g["Debt Default"].iloc[1], 0.0)
     check("8 off: Z-EM rating", g["Rating"].iloc[1], next(r for lo, hi, r, _ in config.Z_RATING_TABLE if lo <= g["Z_EM"].iloc[1] < hi))
@@ -307,7 +301,7 @@ def main():
     # 15. PD methods
     zd, pdd = config.Z_RATING_TABLE[-1][1], config.Z_RATING_TABLE[-1][3]
     grid = np.linspace(-12, 6, 361)
-    for m in ["rating", "rating_tail", "logistic", "rating_curve"]:
+    for m in ["rating", "rating_tail", "logistic"]:
         pds = [shocks.pd_value(z, next(r for lo, hi, r, _ in config.Z_RATING_TABLE if lo <= z < hi), False, {"pd_method": m}) for z in grid]
         check(f"15 {m}: PD falls as Z-EM rises", float(all(a >= b - 1e-15 for a, b in zip(pds, pds[1:]))), 1.0)
         check(f"15 {m}: within [0, 1]", float(all(0 <= v <= 1 for v in pds)), 1.0)
@@ -322,55 +316,33 @@ def main():
     check("15 user", shocks.pd_value(3.0, "BBB+", False, {"pd_method": "user", "pd_user": 0.07}), 0.07)
     check("15 default overrides", shocks.pd_value(3.0, "BBB+", True, {"pd_method": "user", "pd_user": 0.07}), 1.0)
     check("15 cumulative PD", shocks.cumulative_pd([0.1, 0.2, float("nan"), 0.5]), 1 - 0.9 * 0.8 * 0.5)
-    # the continuous rating curve: the band PD at each band's middle, no jump at a band edge, past 40% below D
-    curve = lambda z, **o: shocks.pd_value(z, "", False, dict({"pd_method": "rating_curve"}, **o))  # noqa: E731
-    for zc, lc in shocks.rating_curve_points():
-        check(f"15 curve = band PD at Z {zc:.3f}", curve(zc), 1 / (1 + math.exp(-lc)), 1e-12)
-    fine = np.linspace(-6, 6, 12001)
-    vals = [curve(z) for z in fine]
-    check("15 curve: no jump (largest step on a 0.001 grid below 0.1 pt)", float(max(abs(a - b) for a, b in zip(vals, vals[1:])) < 0.001), 1.0)
-    bands = [shocks.pd_value(z, next(r for lo, hi, r, _ in config.Z_RATING_TABLE if lo <= z < hi), False, {"pd_method": "rating"}) for z in fine]
-    check("15 bands do jump (CCC- to D)", float(max(abs(a - b) for a, b in zip(bands, bands[1:])) >= 0.19), 1.0)
-    check("15 curve: SENELEC's Z (0.15) keeps the CCC+ PD", curve(0.15), 0.1627, 1e-9)
-    check("15 curve: 40% at the D anchor, above below it", float(curve(-1.875) > 0.3999 and curve(-2.5) > 0.4 and curve(-6) > 0.9), 1.0)
-    check("15 curve: tail slope", curve(-3.0, pd_logit_b=-0.5), 1 / (1 + math.exp(-(math.log(0.4 / 0.6) - 0.5 * (-3.0 + 1.875)))))
-    check("15 curve: flat above AAA", curve(9.0), 0.0002, 1e-9)
-    pts = shocks.rating_curve_points()
-    bfit, afit = np.polyfit([z for z, _ in pts], [l for _, l in pts], 1)
-    check("15 logistic defaults = least-squares fit to the band table (a)", config.DEFAULT_CASH_SETTINGS["pd_logit_a"], round(afit, 2))
-    check("15 logistic defaults = least-squares fit to the band table (b)", config.DEFAULT_CASH_SETTINGS["pd_logit_b"], round(bfit, 2))
 
-    # 16. Monte Carlo: continuous PD by default; default draws off by default (on hold), checked when switched on
+    # 16. John's final Monte Carlo: full logistic EFC only, no default draws.
     r = demo[0][1]
-    kw = dict(n_sims=4000, fuel_std=0.1, fx_std=0.08, correlation=0.3, horizon_years=5, lgd_pct=70, seed=42)
-    md = shocks.run_monte_carlo(r, params_for(r, dict(oil)), **dict(kw, n_sims=200))
-    check("16 default: no default draws", float((md["Default Year"] == 0).all() and (md["Realised Cost"] == 0).all()), 1.0)
-    check("16 default: PD from the continuous rating curve",
-          float(all(abs(v - shocks.rating_curve_pd(z, config.DEFAULT_CASH_SETTINGS["pd_logit_b"])) < 1e-15 for z, v in zip(md["Z_EM"], md["PD"]))), 1.0)
-    mb = shocks.run_monte_carlo(r, params_for(r, dict(oil, mc_pd_method="rating")), **dict(kw, n_sims=200))
-    check("16 mc_pd_method = rating: band PDs", float(all(abs(v - config.Z_RATING_TABLE[[t[2] for t in config.Z_RATING_TABLE].index(g)][3]) < 1e-15
-                                                          for g, v in zip(mb["Rating"], mb["PD"]))), 1.0)
-    q = params_for(r, dict(oil, mc_pd_method="user", pd_user=0.1, mc_default_draws=1.0))
+    q = params_for(r, dict(oil, pd_method="user", pd_user=0.1, pd_on_default=1.0))
+    kw = dict(n_sims=100, fuel_std=0.1, fx_std=0.08, correlation=0.3, horizon_years=5, lgd_pct=70, seed=42)
     m1 = shocks.run_monte_carlo(r, q, **kw)
-    m0 = shocks.run_monte_carlo(r, dict(q, mc_default_draws=0.0), **kw)
-    check("16 shock draws unchanged by the default draws", float((m1["Z_EM"].values == m0["Z_EM"].values).all()), 1.0)
-    check("16 no draws: no defaults", float((m0["Default Year"] == 0).all()), 1.0)
-    s = shocks.mc_default_summary(m1)
-    want, se = 1 - 0.9 ** 5, math.sqrt((1 - 0.9 ** 5) * 0.9 ** 5 / 4000)
-    check("16 P(default) = 1 - (1 - PD)^H within 3 s.e.", float(abs(s["p_default"] - want) < 3 * se), 1.0)
-    one = m1[m1["sim"] == m1.loc[m1["Default Year"] > 0, "sim"].iloc[0]]
-    y = int(one["Default Year"].iloc[0])
-    check("16 realised cost = EAD x LGD in the default year", one["Realised Cost"].sum(), float(one.loc[one["Projection Year"] == y, "EAD"].iloc[0]) * 0.7)
-    check("16 mean realised cost", s["cost_mean"], m1.groupby("sim")["Realised Cost"].sum().mean())
+    m0 = shocks.run_monte_carlo(r, dict(q, mc_default_draws=1.0), **kw)
+    check("16 legacy flag ignored", float(np.array_equal(m1["EFC"].values, m0["EFC"].values)), 1.0)
+    check("16 no realised-loss columns", float(not {"Default Year", "Realised Cost"}.intersection(m1.columns)), 1.0)
+    a, b = config.DEFAULT_CASH_SETTINGS["pd_logit_a"], config.DEFAULT_CASH_SETTINGS["pd_logit_b"]
+    z = m1["Z_EM"].values
+    expected_pd = 1 / (1 + np.exp(-np.clip(a + b * z, -700, 700)))
+    check("16 PD calculated from each Z-EM", float(np.allclose(m1["PD"].values, expected_pd)), 1.0)
+    check("16 EFC equals PD x EAD x LGD", float(np.allclose(m1["EFC"].values, m1["PD"].values * m1["EAD"].values * m1["LGD"].values)), 1.0)
+    check("16 PD not the user's fixed 10%", float(not np.allclose(m1["PD"].values, 0.1)), 1.0)
     node = shutil.which("node")
     if node:
         js = """
 const fs = require("fs");
 const inp = JSON.parse(fs.readFileSync(0, "utf8"));
 const E = require(inp.engine).create(inp.config);
-const sims = E.monteCarlo(inp.row, inp.p, { n: 4000, fuelSd: 0.1, fxSd: 0.08, rho: 0.3, H: 5, lgd: 70, seed: 42 });
-const s = E.mcDefaultSummary(sims, null);
-process.stdout.write(JSON.stringify({ p: s.p_default, ok: sims.every((x) => !x.defaultYear || Math.abs(x.realisedCost - x.path[x.defaultYear].EAD * 0.7) < 1e-6) }));
+const sims = E.monteCarlo(inp.row, inp.p, { n: 60, fuelSd: 0.1, fxSd: 0.08, rho: 0.3, H: 5, lgd: 70, seed: 42 });
+const a = inp.config.DEFAULT_CASH_SETTINGS.pd_logit_a, b = inp.config.DEFAULT_CASH_SETTINGS.pd_logit_b;
+const ok = sims.every(s => !('defaultYear' in s) && !('realisedCost' in s) && s.path.every(r =>
+  !('Default Year' in r) && !('Realised Cost' in r) && Math.abs(r.PD - 1/(1+Math.exp(-(a+b*r.Z_EM)))) < 1e-12 &&
+  Math.abs(r.EFC - r.PD * r.EAD * r.LGD) < 1e-9 * Math.max(1,Math.abs(r.EFC))));
+process.stdout.write(JSON.stringify({ ok, n: sims.length }));
 """
         import report  # noqa: E402
         clean = lambda v: None if isinstance(v, float) and math.isnan(v) else (v.item() if hasattr(v, "item") else v)  # noqa: E731
@@ -378,8 +350,7 @@ process.stdout.write(JSON.stringify({ p: s.p_default, ok: sims.every((x) => !x.d
                    "row": {k: clean(v) for k, v in r.items()}, "p": {k: clean(v) for k, v in q.items()}}
         out = subprocess.run([node, "-e", js], input=json.dumps(payload), capture_output=True, text=True, check=True)
         o = json.loads(out.stdout)
-        check("16 JS P(default) within 3 s.e.", float(abs(o["p"] - want) < 3 * se), 1.0)
-        check("16 JS realised cost", float(o["ok"]), 1.0)
+        check("16 JS EFC-only logistic Monte Carlo", float(o["ok"] and o["n"] == 60), 1.0)
 
     if fails:
         print(f"FAIL — {len(fails)} of {n} checks:")

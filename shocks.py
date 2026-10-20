@@ -152,7 +152,7 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         "ArrIPP": 0.0, "ArrFuel": 0.0, "ArrDebt": 0.0, "ArrOps": 0.0, "Reserve": 0.0,
         "ArrStat": 0.0, "ArrFloor": 0.0, "ArrJun": 0.0, "StateShortfall": 0.0, "CustArrears": 0.0,
         # snapshot rules: a year with debt service unpaid is rated D; share of the State receivable in current assets
-        "DefaultRule": _num(params.get("default_on_missed_debt"), 0.0) > 0,
+        "DefaultRule": _num(params.get("default_on_missed_debt"), 1.0) > 0,
         "RecvCurrent": min(1.0, max(0.0, _num(params.get("receivable_current_share"), 1.0))),
     }
 
@@ -504,61 +504,22 @@ def _logistic(x):
     return 1.0 / (1.0 + np.exp(-x)) if np.isfinite(x) else float("nan")
 
 
-def rating_curve_points():
-    """Anchors of the continuous rating curve: (Z, log-odds of the band PD) at the
-    middle of each rating band, ascending in Z. The open-ended bands take half
-    the width of their neighbour: AAA at 4.90 + 0.275, D at -1.50 - 0.375."""
-    t = config.Z_RATING_TABLE
-    pts = []
-    for i, (lo, hi, _r, p) in enumerate(t):
-        if hi == float("inf"):
-            z = lo + (t[i + 1][1] - t[i + 1][0]) / 2
-        elif lo == float("-inf"):
-            z = hi - (t[i - 1][1] - t[i - 1][0]) / 2
-        else:
-            z = (lo + hi) / 2
-        pts.append((z, float(np.log(p / (1.0 - p)))))
-    return sorted(pts)
-
-
-_CURVE = rating_curve_points()
-
-
-def rating_curve_pd(z, tail_b=-1.28) -> float:
-    """Continuous PD: the band PD at each band's middle, linear in log-odds in
-    between (so no jump at a band edge), flat above AAA, and below the D band's
-    anchor rising along a logistic of slope tail_b (PD passes 40% and tends to 1)."""
-    if not np.isfinite(z):
-        return float("nan")
-    lo_z, lo_l = _CURVE[0]
-    if z <= lo_z:
-        return _logistic(lo_l + tail_b * (z - lo_z))
-    if z >= _CURVE[-1][0]:
-        return _logistic(_CURVE[-1][1])
-    for (z0, l0), (z1, l1) in zip(_CURVE, _CURVE[1:]):
-        if z <= z1:
-            return _logistic(l0 + (z - z0) / (z1 - z0) * (l1 - l0))
-    return _logistic(_CURVE[-1][1])
-
-
 def pd_value(z, rating, debt_default, params=None) -> float:
     """PD for one projection year under params["pd_method"]: "rating" (the band
-    PD, as before), "rating_curve" (continuous curve through the band PDs, see
-    rating_curve_pd), "logistic" (1 / (1 + exp(-(a + b Z))) for every Z, a and b
-    fitted to the band table), "user" (a fixed annual PD) or "rating_tail" (band
-    PDs, with a logistic tail below the D threshold). A year with debt service
-    unpaid, when that counts as default, takes pd_on_default."""
+    PD, as before), "rating_tail" (band PDs, and below the D threshold a logistic
+    tail that starts at the D band's PD and rises towards 100% with slope
+    pd_logit_b), "logistic" (1 / (1 + exp(-(a + b Z))) for every Z) or "user" (a
+    fixed annual PD). A year with debt service unpaid takes pd_on_default
+    unless pd_override_on_missed_service=False (used by Monte Carlo)."""
     p = params or {}
-    if debt_default:
+    if debt_default and p.get("pd_override_on_missed_service", True):
         return _num(p.get("pd_on_default"), 1.0)
     method = str(p.get("pd_method") or "rating")
     if method == "user":
         return min(1.0, max(0.0, _num(p.get("pd_user"), 0.10)))
-    b = _num(p.get("pd_logit_b"), -1.28)
-    if method == "rating_curve":
-        return rating_curve_pd(z, b)
+    b = _num(p.get("pd_logit_b"), -1.17)
     if method == "logistic":
-        return _logistic(_num(p.get("pd_logit_a"), -2.33) + b * z) if np.isfinite(z) else float("nan")
+        return _logistic(_num(p.get("pd_logit_a"), -2.18) + b * z) if np.isfinite(z) else float("nan")
     if method == "rating_tail" and np.isfinite(z) and z < _Z_D:
         return _logistic(np.log(_PD_D / (1.0 - _PD_D)) + b * (z - _Z_D))
     return compute_pd_from_rating(rating)
@@ -742,16 +703,15 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
     drawn too when their standard deviation is > 0; params["revenue_sigma"]
     converts revenue draws into a share of revenue. `correlations` holds the
     pairwise correlations keyed "a|b"; if omitted only fuel–FX = `correlation`.
-    PD in the simulations follows params["mc_pd_method"] (default: the continuous
-    rating curve), so a draw near a band edge does not jump. Default events are
-    drawn only with params["mc_default_draws"] = 1 (off by default).
     With only fuel and FX drawn, the draws are identical to the original
     two-variable version for the same seed.
-    Returns a LONG-format DataFrame — one row per (simulation, year)."""
+    Returns a LONG-format DataFrame — one row per (simulation, year),
+    containing expected costs only (no random default events or realised losses)."""
+    # John (Oct 2026): full logistic for every Monte Carlo Z-EM, EFC only.
+    # Missed debt service still affects financials and Z-EM, but cannot force
+    # PD to 100% (that would reintroduce a discontinuity).
+    params = dict(params, pd_method="logistic", pd_override_on_missed_service=False)
     rng = np.random.default_rng(seed)
-    draw_defaults = _num(params.get("mc_default_draws"), 0.0) > 0
-    cost_params = dict(params, pd_method=str(params.get("mc_pd_method") or "rating_curve"))   # the Monte Carlo's own PD
-    u_def = np.random.default_rng(seed + 1).random((n_sims, max(1, horizon_years)))   # separate stream: shock draws unchanged
     corrs = dict(correlations) if correlations else {}
     corrs.setdefault("fuel|fx", correlation)
     names = ["fuel", "fx"] + (["rate"] if rate_std_bps > 0 else []) + (["revenue"] if revenue_std_sd > 0 else [])
@@ -791,37 +751,10 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
         scenario["sim"] = i
         for n in names:
             scenario[{"fuel": "fuel_shock_pct", "fx": "fx_shock_pct", "rate": "rate_shock_bps", "revenue": "revenue_shock_std_devs"}[n]] = drawn[n]
-        scenario = add_cost(scenario, lgd_pct, ead_share, cost_params)
-        # materialisation: the path defaults in the first year a draw falls below that year's PD, or debt service goes unpaid
-        dflt_year, cost = 0, 0.0
-        if draw_defaults:
-            for t in range(1, len(scenario)):
-                pdt = scenario["PD"].iloc[t]
-                if scenario["Debt Default"].iloc[t] > 0 or (pdt == pdt and u_def[i, t - 1] < pdt):
-                    dflt_year, cost = int(scenario["Projection Year"].iloc[t]), float(scenario["EAD"].iloc[t] * scenario["LGD"].iloc[t])
-                    break
-        scenario["Default Year"] = dflt_year                     # 0 = no default over the horizon
-        scenario["Realised Cost"] = [cost if int(y) == dflt_year and dflt_year else 0.0 for y in scenario["Projection Year"]]
+        scenario = add_cost(scenario, lgd_pct, ead_share, params)
         all_rows.append(scenario)
 
     return pd.concat(all_rows, ignore_index=True)
-
-
-def mc_default_summary(mc_long: pd.DataFrame, gdp_series=None) -> dict:
-    """Materialisation from a run_monte_carlo result: share of simulations that
-    default within the horizon, by year, and the realised cost to the State
-    (EAD x LGD in the default year; 0 otherwise): mean, 95th and 99th percentiles,
-    in currency and, with a GDP path, as a share of GDP in the default year."""
-    sims = mc_long.groupby("sim")
-    dy = sims["Default Year"].first()
-    cost = sims["Realised Cost"].sum()
-    out = {"p_default": float((dy > 0).mean()), "by_year": {int(y): float((dy == y).mean()) for y in sorted(set(dy)) if y > 0},
-           "cost_mean": float(cost.mean()), "cost_p95": float(cost.quantile(0.95)), "cost_p99": float(cost.quantile(0.99))}
-    if gdp_series is not None:
-        g = list(gdp_series)
-        share = mc_long.assign(_g=[g[int(t)] for t in mc_long["Projection Year"]]).eval("`Realised Cost` / _g").groupby(mc_long["sim"]).sum()
-        out.update(cost_gdp_mean=float(share.mean()), cost_gdp_p95=float(share.quantile(0.95)), cost_gdp_p99=float(share.quantile(0.99)))
-    return out
 
 
 def mc_percentile_path(mc_long: pd.DataFrame, value_col: str,
@@ -914,6 +847,5 @@ def _policy_suffix(params):
         pol.append(f"borrowing cap {cap:.2f} debt/assets")
     method = str(params.get("pd_method") or "rating")
     if method != "rating":
-        pol.append({"rating_curve": "PD: continuous rating curve", "rating_tail": "PD: rating bands with a logistic tail",
-                    "logistic": "PD: logistic in Z-EM", "user": "PD: user-specified"}.get(method, "PD: " + method))
+        pol.append({"rating_tail": "PD: rating bands with a logistic tail", "logistic": "PD: logistic in Z-EM", "user": "PD: user-specified"}.get(method, "PD: " + method))
     return (" · " + ", ".join(pol)) if pol else ""

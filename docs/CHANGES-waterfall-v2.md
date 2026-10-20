@@ -1,18 +1,15 @@
-# Cash waterfall v2: country orders, baseline drivers and a continuous PD
+> **Superseded for Monte Carlo (20 Oct 2026):** the default materialisation design documented below was subsequently withdrawn by John. The current Monte Carlo reports only logistic-based expected fiscal cost and does not simulate actual defaults. See `CHANGES-John-EFC-only.md`. All other historical changes remain documented below.
 
-This builds on `CHANGES-cash-waterfall.md` (the priority-of-payments waterfall of 20 Oct 2026, afternoon). It adds:
+# Cash waterfall v2: country orders, baseline drivers and a PD that keeps rising
 
-- what the task team's review asked for: the "baseline", "waterfall design", "behavioural and institutional" and "scenarios" lists, and the suggested ordering for Ghana and Côte d'Ivoire;
-- the two rules proposed after "the settings do not change the numbers": late-payment interest by tier, and missed debt service = default (now an option, off by default);
-- the task team's guidance on the PD (20 Oct 2026, evening): a continuous PD for the Monte Carlo, close to the rating PDs, with no discrete jumps; and no simulated default events for now: the Monte Carlo reports expected fiscal cost.
+This builds on `CHANGES-cash-waterfall.md` (the priority-of-payments waterfall of 20 Oct 2026, afternoon). It adds what the task team's review asked for (the "baseline", "waterfall design", "behavioural and institutional" and "scenarios" lists, and the suggested ordering for Ghana and Côte d'Ivoire), the two rules proposed after "the settings do not change the numbers" (late-payment interest by tier; missed debt service = default), and H. Hiro's comment on the PD cap (a PD that can pass 40% and a shock that can materialise).
 
 The framework is unchanged: Z″ → rating → PD → EFC = PD × EAD × LGD. The Python engine (`shocks.py`) and the JavaScript engine (`templates/engine.js`) stay in parity.
 
 **Default behaviour.**
 
-- With every new setting at its default, the single-scenario numbers are those of the previous version, bit for bit. Checked on 157,728 values: demo portfolio, defaults, oil preset and 60 random cash and waterfall settings, against the afternoon version.
-- **Missed debt service = default** is off by default, so the rating follows Z-EM as before. Unpaid debt service still shows in the arrears and on the dashboard.
-- **The Monte Carlo now uses the continuous rating curve** for PD by default (`mc_pd_method`), so its EFC percentiles differ slightly from the previous version. The single scenario keeps the rating bands.
+- With every new setting at its default, the numbers are those of the previous version, bit for bit. Checked on 157,728 values: demo portfolio, defaults, oil preset and 60 random cash and waterfall settings, against the afternoon version.
+- One rule is on by default: **missed debt service counts as default**. It only bites where the waterfall leaves debt service unpaid, which the previous version allowed without consequence. Turn it off (`default_on_missed_debt = 0`) to reproduce the previous ratings exactly.
 
 ## A. The waterfall, generalised
 
@@ -71,11 +68,9 @@ The ranks of debt service and the reserve are not confirmed for Ghana or Côte d
 - **Shown as:** `Late-payment Interest`.
 - **Defaults are 0.** They are placeholders; set them from the PPAs, fuel contracts and loan documents.
 
-### Missed debt service = default (option, off)
+### Missed debt service = default
 
-Off by default: actual default events are on hold, and the tool reports expected fiscal cost. Unpaid debt service is still reported (`Missed Debt Service`, the "Debt service missed" tile and the scenario table).
-
-With `default_on_missed_debt = 1`, a year that ends with debt service unpaid:
+With `default_on_missed_debt = 1` (default), a year that ends with debt service unpaid:
 
 - is rated **D** and flagged in `Debt Default`;
 - has a PD of `pd_on_default`: 100% by default, with 40% (the D-band PD) as the alternative.
@@ -117,48 +112,32 @@ The cap now also applies under the waterfall, to the cash outside it.
   - `demand_growth` scales sales and cash costs together; the margin before depreciation grows with them.
   - `losses_change` cuts customer revenue at the same cost.
 
-## C. Probability of default
+## C. Probability of default and materialisation
 
-The task team asked for a continuous PD in the Monte Carlo, credible and close to the rating PDs: the band PD jumps at each band edge (CCC− 20% to D 40%, for instance), so draws that end on either side of an edge get very different EFCs.
-
-| `pd_method` / `mc_pd_method` | PD |
+| `pd_method` | PD |
 |---|---|
-| `rating` (single-scenario default) | rating bands, at most 40% (D); jumps at each band edge |
-| `rating_curve` (Monte Carlo default) | the band PD at the middle of each band, linear in log-odds in between, so there is no jump; flat above AAA; below the D band it keeps rising past 40% with slope `pd_logit_b` |
-| `logistic` | one curve PD = 1 / (1 + e^−(a + b·Z)) fitted to the rating table: least squares of the band log-odds on Z, a = −2.33, b = −1.28 |
+| `rating` (default) | rating bands, at most 40% (D) |
+| `rating_tail` (recommended) | rating bands; below the D threshold (Z-EM −1.5) a logistic tail anchored at 40%: logit(PD) = logit(0.40) + b × (Z − (−1.5)) |
+| `logistic` | PD = 1 / (1 + e^−(a + b·Z)) for every Z (a = −2.18, b = −1.17: PD ≈ 10% at Z = 0, 40% at Z ≈ −1.5) |
 | `user` | `pd_user` in every year |
-| `rating_tail` | kept for earlier runs (bands, with a logistic tail below D); not in the menus |
 
-**Why the curve rather than a single logistic.**
+- **Calibration.** `a` and `b` are placeholders until calibrated.
+- **Cumulative PD over the horizon:** 1 − Π(1 − PDₜ).
+- **Where the methods apply:** the Shock Scenarios page (single scenario, Monte Carlo, all SOEs). The EFC and Early Warning pages keep the rating bands.
 
-- The rating table rises steeply from B− (7.1%) to CCC+ (16.3%). A single logistic cannot follow that.
-- Fitted to the whole table, the logistic gives about 7% at SENELEC's Z-EM (0.15) instead of the CCC+ band's 16.3%.
-- The curve keeps 16.3% there, and every band's PD at the middle of the band.
+**Monte Carlo default draws (`mc_default_draws`, on).**
 
-**Anchors.**
-
-- The open-ended bands take half the width of their neighbour: AAA at Z 5.175 and D at Z −1.875.
-- The curve passes 40% at −1.875 and then rises along the logistic slope b. The −1.28 default is close to the slope of the curve's last segment (CCC− to D), −1.31.
-
-**Where each setting applies.**
-
-- `pd_method` (panel, under LGD and EAD) sets the PD for the single scenario and All SOEs.
-- `mc_pd_method` (Monte Carlo settings) sets it for the simulations.
-- The EFC and Early Warning pages keep the rating bands.
-
-**Cumulative PD over the horizon:** 1 − Π(1 − PDₜ), shown in the strip.
-
-**No simulated default events.**
-
-- The Monte Carlo reports expected fiscal cost, PD × EAD × LGD, per simulation.
-- Default draws stay in the engine (`mc_default_draws`, `shocks.mc_default_summary`) but are off and not shown. Switched on, they use their own random stream, so the shock draws do not change.
+- **When a simulation defaults:** in the first year a uniform draw falls below that year's PD, or debt service goes unpaid.
+- **Realised cost:** EAD × LGD in that year, and 0 without a default.
+- **Separate random stream.** The draws use their own stream (seed + 1), so the shock draws and every earlier Monte Carlo output are unchanged.
+- **Outputs:** `shocks.mc_default_summary` and the "Default materialisation" card report the share defaulting within the horizon and by year, and the realised cost's mean, 95th and 99th percentiles, in currency and as a share of GDP.
 
 ## D. Front end
 
-- **Panel.** The Cash & financing tab has the country order, shortfall rule, tiers, adoption, cost of arrears, default rule (off), behaviour and lender response. The new Tariffs & collections tab has the baseline drivers. The PD setting for the single scenario sits under LGD and EAD.
+- **Panel.** The Cash & financing tab has the country order, shortfall rule, tiers, adoption, cost of arrears, default rule, behaviour and lender response. The new Tariffs & collections tab has the baseline drivers. The PD settings sit under LGD and EAD.
 - **Liquidity card.** It shows arrears by tier, numbered as in the order of payment, and tiles for:
   - the State's shortfall payment;
-  - missed debt service: shown as arrears, or as a default when that option is on;
+  - missed debt service;
   - the routed share;
   - late-payment interest;
   - customer arrears;
@@ -167,8 +146,8 @@ The task team asked for a continuous PD in the Monte Carlo, credible and close t
   - the review's four scenarios on the same baseline, with "Load into the panel" buttons;
   - cost-recovery ratio (85–110%) × compliance (60/80/100%);
   - the collection rate of public administrations (40–100%).
-- **Strip.** It adds the cumulative PD over the horizon.
-- **Monte Carlo.** A "PD in the simulations" setting, with the continuous rating curve as the default. The CSV adds `PD_final`.
+- **Strip.** It adds the default probability over the horizon.
+- **Monte Carlo.** It adds the default materialisation card, and the CSV carries `Default_Year` and `Realised_Cost`.
 - **Python version.** The classic Shock Scenarios page has the same core settings and outputs.
 - **Assumptions page.** The register has a row for each new setting, with its source or its placeholder status.
 
@@ -187,13 +166,13 @@ Amounts are in FCFA bn. The cost-recovery ratio in the data is 77.6%: revenue le
 
 ### The four scenarios (same results for every order, except Ghana in scenario 4)
 
-| Scenario | Z-EM 2026 | Z-EM 2029 | X1 2026 | Unpaid 2026 | of which SENELEC | Debt service unpaid 2026 | Cumulative PD 2025–29 | EFC / GDP 2026 |
+| Scenario | Z-EM 2026 | Z-EM 2029 | X1 2026 | Unpaid 2026 | of which SENELEC | Debt default | Cumulative PD 2025–29 | EFC / GDP 2026 |
 |---|---|---|---|---|---|---|---|---|
-| 1 No waterfall | 0.06 CCC+ | 0.29 | −0.109 | 0 | 0 | 0 | 58.8% | 1.21% |
-| 2 Full cost recovery (100%), good compliance | 0.18 CCC+ | 0.51 B− | −0.107 | 0 | 0 | 0 | 54.3% | 1.21% |
-| 3 Tariff gap (85%), compliance 60% | 0.06 CCC+ | 0.29 | −0.109 | 0 | 0 | 0 | 58.8% | 1.21% |
-| 4 Fuel price shock (+60% / +30%) | 0.15 CCC+ | 0.29 | −0.092 | 29.8 | 29.8 | 0 | 58.8% | 1.23% |
-| 4 under the Ghana order | 0.15 CCC+ | 0.29 | −0.092 | 29.8 | 27.7 | **2.1** | 58.8% | 1.23% |
+| 1 No waterfall | 0.06 CCC+ | 0.29 | −0.109 | 0 | 0 | — | 58.8% | 1.21% |
+| 2 Full cost recovery (100%), good compliance | 0.18 CCC+ | 0.51 B− | −0.107 | 0 | 0 | — | 54.3% | 1.21% |
+| 3 Tariff gap (85%), compliance 60% | 0.06 CCC+ | 0.29 | −0.109 | 0 | 0 | — | 58.8% | 1.21% |
+| 4 Fuel price shock (+60% / +30%) | 0.15 CCC+ | 0.29 | −0.092 | 29.8 | 29.8 | — | 58.8% | 1.23% |
+| 4 under the Ghana order | 0.15 **D** | 0.29 | −0.092 | 29.8 | 27.7 | **2026** (2.1 bn) | 100% | 7.59% |
 
 How to read it:
 
@@ -201,9 +180,8 @@ How to read it:
 - **Scenario 3 is the same as scenario 1.** A cost-recovery ratio of 85% is above SENELEC's 77.6%, and the State covers the gap, so the ratio moves money between customers and the State, not SENELEC's profit.
 - **Scenario 2 differs** because above about 98% the RMA compensation is used up and the rest goes to SENELEC's margin.
 - **Scenario 4: the shortfall stays on SENELEC's own costs** under every order, because 29.8 bn never gets past them.
-  - Ghana is the exception: debt service sits in Level B with the SOE, pro rata, so 2.1 bn of debt service goes unpaid.
-  - With the default option on, that is a payment default: rated D, cumulative PD 100% and EFC/GDP 7.6% in 2026.
-  - With debt service ranked senior to Level B, the same Ghana run leaves debt service paid.
+  - Ghana is the exception: debt service sits in Level B with the SOE, pro rata, so 2.1 bn of debt service goes unpaid. That is a payment default: rated D, and EFC/GDP 7.6% in 2026.
+  - With debt service ranked senior to Level B, the same Ghana run has no default.
   - The result turns on where debt service sits, which the review could not source. Treat it as an assumption to confirm.
 - **Why Z-EM rises from scenario 1 to 4.** The State receivable is a current asset and SENELEC's current ratio is below 1, so adding it lifts X1. This is the same mechanism as before; see the receivable sensitivity below.
 
@@ -267,31 +245,29 @@ Z-EM 2026 rises a little, from 0.15 to 0.24, because the customer arrears are cu
   - debt service, 14.6 bn;
   - fuel, 4.8 bn;
   - IPPs, 1.0 bn.
-- With the default option on, that is a default in 2026.
+- That is a default in 2026.
 - The O&M floor (50% of own costs) protects nothing here, because the shortfall is larger than every tier below debt service.
 
-### PD in the single scenario and the Monte Carlo (fuel price shock, IPPs and fuel pari passu)
+### PD methods
 
-| | Rating bands | Continuous rating curve | Fitted logistic |
-|---|---|---|---|
-| Z-EM 2024–2029 | −0.11, −0.02, 0.15, 0.31, 0.22, 0.29 | same | same |
-| PD 2024–2029 | 16.3% every year (CCC+) | 16.3, 16.3, 16.3, 14.1, 16.3, 14.6% | 10.0, 9.1, 7.4, 6.1, 6.9, 6.3% |
-| EFC / GDP 2029, single scenario | 1.12% | 1.01% | 0.43% |
-| Monte Carlo 2029 (2,000 draws): PD range, 5th–95th percentile | 7.1% or 16.3% (two values only) | 9.5–16.3% | — |
-| Monte Carlo 2029: EFC / GDP, median and 95th percentile | 1.12%, 1.24% | 1.01%, 1.24% | — |
+| | Rating bands | Logistic (a −2.18, b −1.17) |
+|---|---|---|
+| PD 2025–2029, oil shock under the waterfall | 16.3% every year (CCC+) | 11.4, 10.4, 8.6, 7.3, 8.1, 7.4% |
+| Cumulative PD | 58.8% | 35.4% |
+| Monte Carlo, default within 5 years (2,000 draws) | 59.4% | 36.1% |
+| Realised cost: mean / p95 / p99, % of GDP | 4.4 / 8.0 / 8.4 | 2.7 / 7.9 / 8.3 |
+| Deep shortfall: default within 5 years | 82.9% (56.4% in 2026) | 73.7% |
+| Deep shortfall: realised cost p99, % of GDP | 10.0 | 10.0 |
 
-- **With the rating bands, PD takes only two values in 2029:** 7.1% (B−) or 16.3% (CCC+), depending on which side of Z-EM 0.50 a draw ends. That is the jump the task team pointed to.
-- **The curve gives a smooth range** and the same 95th percentile.
-- **The fitted logistic halves the PD at SENELEC's Z-EM.** This is why it is not the default.
-- **The demo portfolio's SOE A** (Z-EM −7 to −12) shows the curve past the D band: PD about 99% instead of 40%.
+- **The logistic tail** (`rating_tail`) gives the same numbers as the bands for SENELEC, because Z-EM stays above −1.5.
+- **Demo SOE A** (Z-EM −7 to −12) shows the tail: PD about 99.8% instead of 40%.
 
 ## Tests
 
 ```bash
 python tests/check_waterfall_v2.py      # orders, pari passu, rank 0, floor and shortfall rules, State rule, adoption, late interest,
                                         # default, receivable, cost recovery, collections, growth, losses, behaviour, refinancing
-                                        # timing, balance-sheet identity (160 random cases), PD methods incl. the continuous rating curve
-                                        # (band PD at each anchor, no jump, logistic defaults = fit), Monte Carlo PD and default draws (Python and JS)
-python tests/check_engine_parity.py     # adds twelve v2 scenarios and the PD column
+                                        # timing, balance-sheet identity (160 random cases), PD methods, Monte Carlo default draws (Python and JS)
+python tests/check_engine_parity.py     # adds ten v2 scenarios and the PD column (58,717 checks)
 python tests/check_cash_waterfall.py    # caption updated for the order name
 ```

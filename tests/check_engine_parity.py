@@ -158,8 +158,7 @@ def main():
     waterfall_legacy = dict(legacy, waterfall_on=1.0, refinance_share=1.0)
     # waterfall v2: country orders, shortfall rules, compliance and ramp-up, late interest, baseline drivers, PD methods
     wf2 = dict(oil, waterfall_on=1.0, comp_paid_share=0.2, ipp_cost_share=0.2, statutory_cost_share=0.03, om_floor_share=0.4,
-               junior_share=0.2, reserve_months=2, late_rate_priority=0.12, late_rate_debt=0.15, late_rate_other=0.05,
-               default_on_missed_debt=1.0)
+               junior_share=0.2, reserve_months=2, late_rate_priority=0.12, late_rate_debt=0.15, late_rate_other=0.05)
     v2 = {
         "wf_pari": dict(wf2, waterfall_order="pari_passu"),
         "wf_fuel_first": dict(wf2, waterfall_order="fuel_first", shortfall_rule="junior"),
@@ -173,8 +172,6 @@ def main():
         "crr_full": dict(wf2, cost_recovery_ratio=1.1, pd_method="logistic"),
         "refi_rating": dict(oil_policy, refinance_share=0.6, refinance_start_year=2, refinance_min_rating="CCC", pd_method="user", pd_user=0.07),
         "pd_default40": dict(wf2, comp_paid_share=0.0, pd_on_default=0.4, pd_method="rating_tail", pd_logit_b=-0.8),
-        "pd_curve": dict(wf2, comp_paid_share=0.3, pd_method="rating_curve", default_on_missed_debt=0.0),
-        "pd_curve_tail": dict(custom, pd_method="rating_curve", pd_logit_b=-0.6, fx_shock_pct=0.9),
     }
     scenarios = {"zero": zero, "combined": dict(config.DEFAULT_SHOCK_PARAMS), "custom": custom, "subsidy": subsidy, "overfull": overfull,
                  "oil": oil, "oil_policy": oil_policy, "overshoot": overshoot, "cheap_fuel": cheap_fuel, "legacy": legacy,
