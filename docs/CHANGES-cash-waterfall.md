@@ -1,5 +1,7 @@
 # Cash waterfall (priority of payments), refinancing, emergency government support and RMA coverage
 
+> **Superseded in part by `CHANGES-waterfall-v2.md`** (20 Oct 2026, evening): country orders with pari passu tiers, a rank-0 tier for taxes and the operator fee, an O&M floor, shortfall rules, coverage / compliance / ramp-up, late-payment interest, missed debt service = default, tariffs and collections, and the PD methods. With the new settings at their defaults and the default rule off, the numbers below are unchanged.
+
 This builds on `fuel-path-cash-first`. It covers the items from the SENELEC oil-shock note that the tool did not yet model:
 
 - the cash waterfall, with IPPs paid first;
@@ -102,7 +104,21 @@ The refinancing results of the morning version still hold, now under `refinance_
 
 - **This gain comes from refinancing, not from the waterfall.** It rests on lenders agreeing to the refinancing, and on a single rating step: Z crosses 0.5, the CCC+/B− boundary, and the PD falls from 16.27% to 7.1%.
 - **Distress zone.** Z stays below 1.1, so SENELEC remains in the distress zone.
-- **The priority-of-payments waterfall for SENELEC** (who goes unpaid, how much of SENELEC's own operations is left underfunded) still has to be run on the SENELEC data file, which is not in this package.
+
+### The waterfall for SENELEC (tester file, 2024 base, same settings, IPP share 17%)
+
+| 2026 | Z″ (rating) | EFC ÷ GDP | Borrowed | Own costs unpaid |
+|---|---|---|---|---|
+| Oil shock, gap borrowed | 0.15 (CCC+) | 1.24% | 30.3 bn | — |
+| + waterfall | 0.15 (CCC+) | 1.23% | 0 | 29.8 bn |
+| + waterfall, State pays 18% in the year | 0.13 (CCC+) | 1.33% | 0 | 156.7 bn |
+| + waterfall, tariff +15% | 0.16 (CCC+) | 1.21% | 0 | 0 |
+| + waterfall, State pays in full in the year | 0.06 (CCC+) | 1.21% | 0 | 0 |
+| Oil shock + refinancing 100% | 0.57 (B−) | 0.54% | 26.2 bn | — |
+
+- **The waterfall alone moves the shortfall, it does not close it.** SENELEC uses all of its 56.3 bn of cash, and 29.8 bn of its own bills (tier 5) is left unpaid in 2026 and paid in 2027 when the State's backlog arrives. IPPs (172.9 bn), fuel (861.6 bn) and interest (14.6 bn) are paid in full in every scenario.
+- **With a 300-day lag** (18% paid in the year), 156.7 bn is left unpaid: 82% of SENELEC's own-cost bill of 190.7 bn. Tier 5 includes 89.0 bn of personnel, so in practice staff, SAR or maintenance would carry part of it.
+- **Tariffs or State payments** remove the shortfall. **Refinancing** is the only change that moves the rating, with or without the waterfall (with it: Z″ 0.57, 25.8 bn of own costs unpaid in 2026).
 
 ## Tests
 

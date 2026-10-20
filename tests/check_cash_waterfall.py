@@ -250,11 +250,13 @@ def main():
             if not same(a[c].iloc[t], b[c].iloc[t]):
                 fails.append(f"8 legacy: the waterfall or refinancing changed {c} at t={t}")
     wf0 = dict(zero, waterfall_on=1.0)
-    for p, want in [(zero, "No shock applied (baseline)"), (wf0, "No shock applied (baseline) · cash waterfall"),
+    for p, want in [(zero, "No shock applied (baseline)"), (wf0, "No shock applied (baseline) · cash waterfall (IPPs first)"),
                     (dict(zero, refinance_share=0.5), "No shock applied (baseline) · 50% of short-term debt refinanced"),
                     (dict(wf0, refinance_share=1.0, borrowing_cap_debt_to_assets=0.8),
-                     "No shock applied (baseline) · cash waterfall, 100% of short-term debt refinanced, borrowing cap 0.80 debt/assets"),
-                    (dict(fuel, waterfall_on=1.0), "Fuel +60%, gov. absorbs 100% of fuel cost change — active 1yr · cash waterfall")]:
+                     "No shock applied (baseline) · cash waterfall (IPPs first), 100% of short-term debt refinanced, borrowing cap 0.80 debt/assets"),
+                    (dict(fuel, waterfall_on=1.0), "Fuel +60%, gov. absorbs 100% of fuel cost change — active 1yr · cash waterfall (IPPs first)"),
+                    (dict(wf0, waterfall_order="ghana", waterfall_compliance=0.6, shortfall_rule="state", cost_recovery_ratio=0.85, pd_method="logistic"),
+                     "No shock applied (baseline) · cash waterfall (Ghana order, 60% of cash routed, State covers the shortfall), cost recovery 85%, PD: logistic in Z-EM")]:
         n += 1
         if shocks.describe_active_shocks(p) != want:
             fails.append(f"8 caption: {shocks.describe_active_shocks(p)!r} vs {want!r}")

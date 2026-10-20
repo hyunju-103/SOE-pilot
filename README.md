@@ -46,6 +46,7 @@ soe_tool/
 │   │                            balance-sheet identity, cash arithmetic
 │   ├── check_fuel_path_cash.py Fuel price path, oil linkage, tariff base,
 │   │                            cash-first financing; bit-exact vs 064ac24
+│   ├── check_waterfall_v2.py  Country orders, shortfall rules, baseline drivers, PD methods
 │   └── check_cash_waterfall.py Cash waterfall (priority of payments),
 │                                refinancing, borrowing cap, RMA coverage
 ├── .streamlit/config.toml     Widget colors matching the palette
@@ -126,6 +127,7 @@ python tests/check_engine_parity.py     # needs Node.js; compares JS vs Python
 python tests/check_cash_channel.py      # oil-shock cash channel checks
 python tests/check_fuel_path_cash.py    # fuel path, oil linkage, tariff base, cash-first (needs git for the bit-exact part)
 python tests/check_cash_waterfall.py    # cash waterfall, refinancing, borrowing cap / emergency support, RMA coverage
+python tests/check_waterfall_v2.py      # country orders, shortfall rules, adoption, late interest, default, tariffs and collections, PD methods
 ```
 
 From a shell:
@@ -368,18 +370,38 @@ which the utility borrows to cover.
     column, with the share at 0% or with `legacy_loss_assets=True` the rule is
     off and every shortfall is borrowed, as before.
   - *Cash waterfall (priority of payments)*, off by default (`waterfall_on`).
-    The SOE's cash is paid out in a fixed order: (1) IPPs, `ipp_cost_share` ×
-    operating expense; (2) fuel, including the fuel-cost change; (3) debt
-    service; (4) a reserve account, `reserve_months` of tiers 1 and 3; (5) the
-    SOE's own operations and other suppliers (the rest of operating expense,
-    less depreciation). The waterfall creates no cash: after the SOE's own
-    cash, a shortfall is not borrowed but left unpaid from tier 5 upwards (the
-    reserve is drawn before tiers 1–3), as current liabilities without
-    interest. A later surplus pays arrears from tier 1 down, tops up the
-    reserve, then pays tier 5. The borrowing split, rate and cap do not apply
-    while it is on.
+    The routed share of the SOE's cash (`waterfall_coverage` ×
+    `waterfall_compliance` × a ramp-up from `waterfall_start_year`) is paid in
+    the country order chosen on the panel (`waterfall_order`: Senegal / IPPs
+    first, IPPs and fuel pari passu, fuel first, Ghana, Côte d'Ivoire or
+    custom ranks): taxes, levies and the operator fee (rank 0); IPPs; fuel;
+    senior debt service; a reserve account; the SOE's O&M floor; then its
+    other costs and junior creditors. Tiers with the same rank share pro rata.
+    The waterfall creates no cash: after the SOE's own cash, the routed
+    shortfall is not borrowed but left unpaid from the lowest rank up — or
+    paid by the State (`shortfall_rule`) — as current liabilities that carry
+    late-payment interest (`late_rate_*`). A year that ends with debt service
+    unpaid is rated D (`default_on_missed_debt`, PD on default 100% or 40%).
+    Supplier and State responses (`priority_discount`, `state_paid_uplift`)
+    are scenario parameters. A later surplus pays arrears from the top rank
+    down and tops up the reserve; cash outside the waterfall is borrowed as
+    before. See `docs/CHANGES-waterfall-v2.md`.
+  - *Tariffs & collections* (baseline, with or without the waterfall): the
+    cost-recovery ratio (`cost_recovery_ratio`, average tariff / full cost;
+    the State compensates `tariff_gap_state_share` of the change), the share
+    of the State receivable counted in current assets
+    (`receivable_current_share`), collection rates for households, large
+    private customers and public administrations (unpaid bills become
+    `Customer Arrears`), demand growth and network losses.
+  - *Probability of default* (`pd_method`, below LGD and EAD): rating bands
+    (at most 40%), rating bands with a logistic tail below the D threshold,
+    a logistic curve in Z-EM, or a user value. The Monte Carlo view also
+    draws defaults (`mc_default_draws`): the share of simulations that
+    default within the horizon and the realised cost (EAD × LGD) — mean,
+    95th and 99th percentiles.
   - *Refinancing* (separate assumption, `refinance_share`, 0 = off): in
-    projection year 1 that share of the short-term bank debt (the
+    `refinance_start_year` (default 1), or later once the previous year's
+    rating meets `refinance_min_rating`, that share of the short-term bank debt (the
     `Short Term Debt` column, else near-term maturity share × total
     liabilities) is refinanced long-term: current liabilities fall, total
     liabilities do not, and (`short_term_debt_rate` − `refinance_long_term_rate`)

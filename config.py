@@ -389,13 +389,54 @@ DEFAULT_CASH_SETTINGS = {
     # own operations and other suppliers. It decides who is paid but creates no cash: a
     # shortfall is not borrowed but left unpaid from the bottom tier up.
     "waterfall_on": 0.0,                # 1 = waterfall in place (0/1)
-    "ipp_cost_share": 0.0,              # IPP power purchases as a share of operating expense (tier 1)
-    "reserve_months": 0.0,              # reserve account target: months of IPP payments and debt service (tier 4)
+    "waterfall_order": "senelec_note",  # order of payment: a key of WATERFALL_ORDERS ("custom" uses the rank_* settings)
+    "shortfall_rule": "soe",            # who absorbs a shortfall: "soe" (its own operations first), "junior" (junior creditors
+                                        # first), "pro_rata" (both together) or "state" (the State pays it)
+    "ipp_cost_share": 0.0,              # IPP capacity and energy payments, share of operating expense
+    "statutory_cost_share": 0.0,        # statutory charges, levies and operator / collection costs, share of operating expense (tier 0)
+    "om_floor_share": 0.0,              # protected minimum for the SOE's own operations and maintenance, share of its own-cost bill
+    "junior_share": 0.0,                # share of the residual own-cost bill owed to junior creditors (other suppliers, regulators, subsidies, capex)
+    "reserve_months": 0.0,              # reserve account target: months of IPP payments and debt service
+    # custom order (waterfall_order = "custom"): lower = paid first, equal = pari passu
+    "rank_statutory": 0.0, "rank_fuel": 2.0, "rank_ipp": 1.0, "rank_debt": 3.0, "rank_reserve": 4.0,
+    "rank_om_floor": 5.0, "rank_residual": 6.0,
+    # how much cash goes through the waterfall: coverage x compliance, phased in over the ramp-up from the start year
+    "waterfall_coverage": 1.0,          # share of collections that enter the account
+    "waterfall_compliance": 1.0,        # share of that cash actually routed (60-100% in practice)
+    "waterfall_start_year": 1.0,        # projection year the waterfall starts
+    "waterfall_rampup_months": 0.0,     # linear phase-in (12-24 months in practice)
+    # what being unpaid costs
+    "late_rate_priority": 0.0,          # late-payment interest on arrears to IPPs and fuel suppliers (PPA penalty rate)
+    "late_rate_debt": 0.0,              # default interest on missed debt service
+    "late_rate_other": 0.0,             # late-payment interest on statutory, own-operations and junior arrears
+    "default_on_missed_debt": 1.0,      # 1 = a year with debt service unpaid is rated D (PD of the D band)
+    # behaviour under the waterfall
+    "priority_discount": 0.0,           # price cut on fuel and IPP bills that priority creditors grant in return
+    "state_paid_uplift": 0.0,           # points added to the State's in-year payment shares once the waterfall runs
+    # baseline: tariff gap, State compensation, collections, demand
+    "cost_recovery_ratio": 0.0,         # customer revenue / full cost of supply (operating expense + interest); 0 = from the data
+    "tariff_gap_state_share": 1.0,      # share of a change in the tariff gap that the State compensates (the rest is the SOE's)
+    "receivable_current_share": 1.0,    # share of the State compensation receivable counted in current assets (X1)
+    "collect_households": 1.0, "collect_large_private": 1.0, "collect_public": 1.0,   # in-year collection rates by segment
+    "share_households": 0.55, "share_large_private": 0.30, "share_public": 0.15,     # segment shares of customer revenue (placeholders)
+    "customer_arrears_collected": 0.5,  # share of unpaid customer bills collected the next year
+    "demand_growth": 0.0,               # yearly growth of sales and cash operating costs
+    "losses_change": 0.0,               # change in network losses, share of billed sales lost at the same cost
+    # probability of distress on the Shock Scenarios page
+    "pd_method": "rating",              # "rating" (band PD, max 40%), "rating_tail" (bands, then a logistic tail below the D threshold),
+                                        # "logistic" (PD = 1 / (1 + exp(-(a + b Z))) everywhere) or "user" (a fixed annual PD)
+    "pd_logit_a": -2.18,                # logistic intercept (fit of the band table on the logit scale)
+    "pd_logit_b": -1.17,                # logistic slope on Z (also the slope of the tail)
+    "pd_user": 0.10,                    # annual PD when pd_method = "user"
+    "pd_on_default": 1.0,               # PD in a year with debt service unpaid (1 = the default has happened; 0.40 = the D band)
+    "mc_default_draws": 1.0,            # Monte Carlo: draw defaults from each path's PD (1) and count missed debt service as default
     # Refinancing (separate assumption, off by default): short-term bank debt replaced
     # by long-term loans in the first projection year.
     "refinance_share": 0.0,             # share of short-term bank debt refinanced
     "short_term_debt_rate": 0.08,       # rate on the overdrafts that are refinanced (SENELEC note: 7.5–8.5%)
     "refinance_long_term_rate": 0.05,   # rate on the long-term loans that replace them (placeholder)
+    "refinance_start_year": 1.0,        # projection year the refinancing happens (lenders take a year or more)
+    "refinance_min_rating": "",         # refinanced only once the previous year's rating is at least this ("" = no condition)
     # Emergency government support: new borrowing stops where total liabilities /
     # total assets would pass this cap and the State injects the rest. 0 = no cap.
     "borrowing_cap_debt_to_assets": 0.0,
@@ -404,6 +445,52 @@ DEFAULT_CASH_SETTINGS = {
 # "Cash waterfall" button on the Shock Scenarios page: switches the priority of
 # payments on, on top of whatever scenario is set (refinancing stays as set).
 WATERFALL_PRESET = {"waterfall_on": 1.0}
+
+# Orders of payment. Ranks: lower = paid first, equal = pari passu (shared in
+# proportion to the bills). "residual" is the rank of the SOE's own operations
+# above the floor and of the junior creditors; the shortfall rule decides which
+# of the two absorbs first (or both together). The reserve is drawn before the
+# tiers at or above its rank go unpaid.
+WATERFALL_TIERS = ["statutory", "ipp", "fuel", "debt", "reserve", "om_floor", "residual"]
+WATERFALL_ORDERS = {
+    "senelec_note": {"short": "IPPs first", "label": "Senegal: IPPs first (SENELEC note)",
+                     "ranks": {"statutory": 0, "ipp": 1, "fuel": 2, "debt": 3, "reserve": 4, "om_floor": 5, "residual": 6},
+                     "rule": "soe",
+                     "evidence": "SENELEC oil-shock note (2026): IPPs paid first. Ranks of debt service and the reserve are assumptions."},
+    "pari_passu": {"short": "IPPs and fuel pari passu", "label": "IPPs and fuel pari passu (suggested base)",
+                   "ranks": {"statutory": 0, "ipp": 1, "fuel": 1, "debt": 2, "reserve": 3, "om_floor": 4, "residual": 5},
+                   "rule": "soe",
+                   "evidence": "Task team review (20 Oct 2026): IPPs and fuel form one top tier in Ghana and Côte d'Ivoire; a gas supplier can stop delivering."},
+    "fuel_first": {"short": "fuel first", "label": "Fuel before IPPs (sensitivity)",
+                   "ranks": {"statutory": 0, "ipp": 2, "fuel": 1, "debt": 3, "reserve": 4, "om_floor": 5, "residual": 6},
+                   "rule": "soe",
+                   "evidence": "Sensitivity on the order of payment (fuel before IPPs)."},
+    "ghana": {"short": "Ghana order", "label": "Ghana: cash waterfall mechanism (2025)",
+              "ranks": {"statutory": 0, "ipp": 1, "fuel": 1, "debt": 2, "reserve": 3, "om_floor": 2, "residual": 2},
+              "rule": "pro_rata",
+              "evidence": "PURC validation report, May 2025 (Cabinet approval 20 May 2025): Level A = IPPs, WAPCo and the Fuel Account; statutory "
+                          "deductions; Level B = SOEs (VRA, Bui, GNGC, ECG, GRIDCo), regulators and embedded generators, each a set share of the pool. "
+                          "Debt service and reserves are not mentioned; placed in Level B as an assumption."},
+    "cote_divoire": {"short": "Côte d'Ivoire order", "label": "Côte d'Ivoire: operator first, then IPPs and gas",
+                     "ranks": {"statutory": 0, "ipp": 1, "fuel": 1, "debt": 2, "reserve": 3, "om_floor": 4, "residual": 5},
+                     "rule": "soe",
+                     "evidence": "IPP payments are prioritised by law in a cascade (Proparco); the operator's (CIE) remuneration first and IPPs and gas "
+                                 "pari passu are from the task team review and not independently verified. Put the operator fee in the statutory tier."},
+    "custom": {"short": "custom order", "label": "Custom order",
+               "ranks": None, "rule": None,
+               "evidence": "Ranks set on the panel (rank_* settings)."},
+}
+
+# The four scenarios of the task team review, on the same baseline. The shock
+# scenario also applies the oil price path (the page does that).
+WATERFALL_SCENARIOS = {
+    "status_quo": {"short": "No waterfall", "label": "No waterfall (status quo)", "set": {"waterfall_on": 0.0}},
+    "full_recovery": {"short": "Full cost recovery, good compliance", "label": "Waterfall, full cost recovery, good compliance",
+                      "set": {"waterfall_on": 1.0, "cost_recovery_ratio": 1.0, "waterfall_coverage": 1.0, "waterfall_compliance": 1.0}},
+    "tariff_gap": {"short": "Tariff gap, partial compliance", "label": "Waterfall, persistent tariff gap, partial compliance",
+                   "set": {"waterfall_on": 1.0, "cost_recovery_ratio": 0.85, "waterfall_coverage": 1.0, "waterfall_compliance": 0.6}},
+    "shock": {"short": "Fuel price shock", "label": "Waterfall with a fuel price shock", "set": {"waterfall_on": 1.0}, "oil_shock": True},
+}
 
 # "Oil +60% with delayed State payment" preset on the Shock Scenarios page —
 # the SENELEC assumptions (sources in PARAMETER_REGISTER below). The fuel price
@@ -571,8 +658,11 @@ GLOSSARY = {
     "State compensation": "What the State owes the SOE for keeping tariffs below cost — for SENELEC, the gap between the regulator's Maximum Authorized Revenue (RMA) and tariff revenue. It is booked as revenue when due, but only the part actually paid arrives as cash.",
     "State compensation receivable": "Compensation the State has recognised but not yet paid. It sits in current assets, so profit looks fine, but it is not cash — the SOE has to borrow to pay its fuel bills in the meantime.",
     "Cash funding gap": "Cash the SOE is short of in a year because of losses, unpaid State compensation or input VAT it cannot recover. It is borrowed — short-term (overdrafts, short-term loans, late payment of suppliers) or long-term — and the new debt carries interest.",
-    "Cash waterfall": "A priority-of-payments rule: the SOE's cash is paid out in a fixed order — independent power producers (IPPs), fuel, debt service, a reserve account, then the SOE's own operations and other suppliers. It decides who is paid, not how much cash there is: when cash runs short, the lowest tiers go unpaid, so paying IPPs first can leave the SOE's own operations underfunded. Closing the gap takes tariffs or State payments.",
-    "Underfunded operations": "Under the cash waterfall, the part of the year's cash shortfall left on the bottom tier — the SOE's own operations and other suppliers — after the priority creditors are paid.",
+    "Cash waterfall": "A priority-of-payments rule: the SOE's cash is paid out in a set order — for example taxes and the operator fee, then independent power producers (IPPs) and fuel, debt service and a reserve, the SOE's minimum operations and maintenance, and finally other suppliers. The order differs by country. It decides who is paid, not how much cash there is: when cash runs short, the lowest ranks go unpaid, so paying IPPs first can leave the SOE's own operations underfunded. Closing the gap takes tariffs or State payments.",
+    "Underfunded operations": "Under the cash waterfall, the part of the year's cash shortfall left on the SOE's own costs — its O&M floor and its other operating costs — after the ranks above are paid.",
+    "Cost-recovery ratio": "Average tariff divided by the full cost of supply (here operating expense, including depreciation, plus interest). Below 100%, the tariff gap has to be covered by State compensation or absorbed by the SOE.",
+    "Shortfall rule": "Under the cash waterfall, who bears the part of the bills the cash cannot pay: the SOE's own operations, junior creditors (other suppliers, regulators, capex), both pro rata, or the State through a budget transfer.",
+    "Logistic PD": "A probability of default that keeps rising as the Z-EM score falls, along an S-shaped curve PD = 1 / (1 + e^−(a + b·Z)), instead of stopping at the 40% of the lowest rating band.",
     "Refinancing": "Replacing short-term bank debt (overdrafts) with long-term loans. It moves debt out of current liabilities and can lower the interest rate, but it is a separate assumption: it depends on lenders agreeing, not on the payment order.",
     "Emergency support": "A capital injection from the government once the SOE cannot borrow any more (here: when total liabilities would pass a set share of total assets). It is a direct cost to the budget, on top of the expected fiscal cost.",
     "RMA coverage": "Customer revenue (revenue less government grants, plus any tariff increase or pass-through) as a share of the regulator's Maximum Authorized Revenue (RMA) after the fuel-cost change. The rest has to come from the State.",
@@ -833,9 +923,50 @@ PARAMETER_REGISTER = [
     _p("Fuel policy and cash", "Input VAT on the extra fuel bill", f"rate {DEFAULT_CASH_SETTINGS['vat_rate']:.0%}, unrecovered {DEFAULT_CASH_SETTINGS['vat_trapped_share']:.0%}", "placeholder",
        "Senegal standard VAT rate; the unrecovered share depends on the SOE's VAT-exempt sales", "Shock Scenarios"),
     _p("Fuel policy and cash", "Cash waterfall (priority of payments)", "off (button: on)", "design",
-       "SENELEC: IPPs paid first. Modelled as a fixed order — IPPs, fuel, debt service, reserve, own operations and other suppliers. "
-       "No cash is created and nothing is borrowed while it is on: a shortfall is left unpaid from the bottom tier up (task team comment, 20 Oct 2026: "
-       "the waterfall prioritizes payment but does not create cash; IPP priority can leave the SOE underfunded)", "Shock Scenarios"),
+       "Ranked tiers, same rank = pari passu (pro rata to the year's bills): taxes, levies and operator fee; IPPs; fuel and gas; senior debt service; "
+       "reserve; the SOE's O&M floor; the SOE's other costs and junior creditors. No cash is created: the routed shortfall is not borrowed but left "
+       "unpaid from the lowest rank up, or paid by the State (task team comment, 20 Oct 2026: the waterfall prioritizes payment but does not create "
+       "cash; IPP priority can leave the SOE underfunded)", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Order of payment (country presets)", ", ".join(o["short"] for o in WATERFALL_ORDERS.values()), "design",
+       "Senegal: IPPs first (SENELEC note). Ghana: PURC validation report, May 2025 (Level A IPPs, WAPCo and Fuel Account; statutory deductions; "
+       "Level B SOEs and regulators pro rata). Côte d'Ivoire: operator (CIE) first, then IPPs and gas pari passu — task team review, not "
+       "independently verified. Ranks of debt service and reserves are not confirmed for Ghana or Côte d'Ivoire: assumptions", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Shortfall rule", f"{DEFAULT_CASH_SETTINGS['shortfall_rule']} (SOE absorbs first); Ghana preset pro rata", "design",
+       "Task team review: who absorbs a deficit — the SOE, the State through compensation, or unpaid junior creditors", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Taxes, levies and operator fee (rank 0)", f"{DEFAULT_CASH_SETTINGS['statutory_cost_share']:.0%} of OpEx + reported tax expense", "placeholder",
+       "Task team review: rank zero for taxes, levies and the operator or collection costs (Ghana statutory deductions; CIE remuneration)", "Shock Scenarios"),
+    _p("Fuel policy and cash", "O&M floor", f"{DEFAULT_CASH_SETTINGS['om_floor_share']:.0%} of the SOE's own costs", "placeholder",
+       "Task team review: test whether operations and maintenance are guaranteed or can be squeezed to zero; set from the SOE's minimum maintenance budget", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Junior creditors (other suppliers, regulators, capex)", f"{DEFAULT_CASH_SETTINGS['junior_share']:.0%} of own costs", "placeholder",
+       "Residual tier of the review's suggested structure", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Coverage and compliance", f"{DEFAULT_CASH_SETTINGS['waterfall_coverage']:.0%} × {DEFAULT_CASH_SETTINGS['waterfall_compliance']:.0%}", "user",
+       "Task team review: which collections enter the account, and imperfect adoption (test 60–100% of cash actually routed)", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Start year and ramp-up", f"year {DEFAULT_CASH_SETTINGS['waterfall_start_year']:.0f}, {DEFAULT_CASH_SETTINGS['waterfall_rampup_months']:.0f} months", "user",
+       "Task team review: allow a phase-in of 12 to 24 months; linear, averaged over each year", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Late-payment interest on arrears", "0% (IPPs and fuel, debt, other)", "placeholder",
+       "Set from the PPA late-payment clauses, fuel contracts and loan documents; on arrears at the start of each year", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Missed debt service = default", "on: rated D, PD on default 100% (40% option)", "design",
+       "A year that ends with debt service unpaid under the waterfall is a payment default (team discussion with H. Hiro, Oct 2026)", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Supplier and State responses", "price cut 0%, State paid share +0", "placeholder",
+       "Task team review: scenario parameters for supplier terms in return for priority and for more reliable State payment; 0 = no behavioural response", "Shock Scenarios"),
+    _p("Tariffs and collections", "Cost-recovery ratio", "as in the data (0); test 85–110%", "user",
+       "Task team review: average tariff / full cost of supply, the most important single input. Full cost = operating expense (incl. depreciation) + interest", "Shock Scenarios"),
+    _p("Tariffs and collections", "State share of the tariff gap", f"{DEFAULT_CASH_SETTINGS['tariff_gap_state_share']:.0%}", "user",
+       "Share of a change in the tariff gap compensated by the State (SENELEC: RMA compensation), paid in cash at the in-year paid share", "Shock Scenarios"),
+    _p("Tariffs and collections", "State receivable in current assets", f"{DEFAULT_CASH_SETTINGS['receivable_current_share']:.0%}", "user",
+       "Task team review: whether subsidy receivables count as current assets and are collectible can swing X1 more than the waterfall", "Shock Scenarios"),
+    _p("Tariffs and collections", "Collection rates by segment",
+       f"households {DEFAULT_CASH_SETTINGS['collect_households']:.0%}, large private {DEFAULT_CASH_SETTINGS['collect_large_private']:.0%}, public {DEFAULT_CASH_SETTINGS['collect_public']:.0%}; "
+       f"shares {DEFAULT_CASH_SETTINGS['share_households']:.0%}/{DEFAULT_CASH_SETTINGS['share_large_private']:.0%}/{DEFAULT_CASH_SETTINGS['share_public']:.0%}", "placeholder",
+       "Task team review: public administrations usually the weakest payer. Sales shares are placeholders; set from the SOE's billing data", "Shock Scenarios"),
+    _p("Tariffs and collections", "Demand growth and losses", "0% / 0%", "user",
+       "Macro drivers in the task team review; demand growth scales sales and cash costs together, losses cut customer revenue at the same cost", "Shock Scenarios"),
+    _p("Probability of distress", "PD method", f"{DEFAULT_CASH_SETTINGS['pd_method']}; logistic a {DEFAULT_CASH_SETTINGS['pd_logit_a']}, b {DEFAULT_CASH_SETTINGS['pd_logit_b']}", "placeholder",
+       "Comment by H. Hiro (Oct 2026): PD should keep rising beyond 40% as distress deepens. Rating bands (cap 40%); rating bands with a logistic tail "
+       "anchored at 40% at the D threshold; logistic 1/(1+e^−(a+bZ)); or a user PD. a and b to be calibrated (country defaults, agency curves or a "
+       "judgement anchor)", "Shock Scenarios"),
+    _p("Probability of distress", "Default materialisation (Monte Carlo)", "on", "design",
+       "Each simulation defaults in the first year a uniform draw falls below that year's PD (or debt service is missed); realised cost = EAD × LGD in that year", "Shock Scenarios (Monte Carlo)"),
     _p("Fuel policy and cash", "IPP purchases, share of operating expense", f"{DEFAULT_CASH_SETTINGS['ipp_cost_share']:.0%} (oil preset {OIL_SHOCK_PRESET['ipp_cost_share']:.0%})", "proxy",
        "SENELEC 2022: purchased electricity ≈ COGS 647.4 bn − fuel 494.9 bn = 152.5 bn, / operating expense 888.5 bn; includes OMVS and imports, "
        "so an upper bound for IPPs alone. Used only to size tier 1 of the waterfall", "Shock Scenarios"),
@@ -843,15 +974,16 @@ PARAMETER_REGISTER = [
        "Set from the escrow or debt-service reserve agreement; funded from surpluses after the priority arrears, drawn before priority creditors go unpaid", "Shock Scenarios"),
     _p("Fuel policy and cash", "Short-term bank debt refinanced", f"{DEFAULT_CASH_SETTINGS['refinance_share']:.0%}", "user",
        "Separate from the waterfall: depends on lenders. Debt base 'Short Term Debt', else near-term maturity share × total liabilities; moved out of "
-       "current liabilities in projection year 1", "Shock Scenarios"),
+       "current liabilities in the start year (default year 1), or later once the previous year's rating meets the minimum (task team review: "
+       "a refinancing benefit takes a year or more and depends on rating and investor confidence)", "Shock Scenarios"),
     _p("Fuel policy and cash", "Overdraft rate (refinanced)", f"{DEFAULT_CASH_SETTINGS['short_term_debt_rate']:.1%}", "literature",
        "SENELEC note (2026): short-term overdrafts at 7.5–8.5%; mid-point", "Shock Scenarios"),
     _p("Fuel policy and cash", "Long-term rate on refinanced debt", f"{DEFAULT_CASH_SETTINGS['refinance_long_term_rate']:.1%}", "placeholder",
        "Cost of the structured long-term loans that replace the overdrafts; set from the refinancing term sheet (DFI / concessional terms are lower)", "Shock Scenarios"),
     _p("Fuel policy and cash", "Borrowing cap before emergency support", "off (0)", "user",
        "IMF SOE Stress Test Tool User Guide (2023), Section VIII: cash, then borrowing, then government injection. Set a total-liabilities / total-assets ceiling "
-       "(e.g. a covenant or the debt limit in the performance contract); the shortfall above it is a capital injection. Not used under the cash waterfall, "
-       "which borrows nothing", "Shock Scenarios"),
+       "(e.g. a covenant or the debt limit in the performance contract); the shortfall above it is a capital injection. Under the cash waterfall it applies "
+       "only to the cash outside it", "Shock Scenarios"),
     _p("Fuel policy and cash", "Oil-shock preset: fuel price path", "/".join(f"{v:+.0%}" for v in OIL_SHOCK_PRESET["fuel_shock_path"]) + " (years 1–5)", "literature",
        "Task team scenario (email of 16 Oct 2026): oil and HFO +60% in 2026; +30% in 2027 is a half-reversion assumption, then back to the base price", "Shock Scenarios"),
     _p("Fuel policy and cash", "Oil-shock preset: fuel share of operating expense", f"{OIL_SHOCK_PRESET['fuel_cost_share']:.0%} of OpEx", "literature",

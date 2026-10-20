@@ -150,6 +150,10 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         "Refinanced": 0.0, "Support": 0.0,
         # cash waterfall: arrears by priority tier and the reserve account
         "ArrIPP": 0.0, "ArrFuel": 0.0, "ArrDebt": 0.0, "ArrOps": 0.0, "Reserve": 0.0,
+        "ArrStat": 0.0, "ArrFloor": 0.0, "ArrJun": 0.0, "StateShortfall": 0.0, "CustArrears": 0.0,
+        # snapshot rules: a year with debt service unpaid is rated D; share of the State receivable in current assets
+        "DefaultRule": _num(params.get("default_on_missed_debt"), 1.0) > 0,
+        "RecvCurrent": min(1.0, max(0.0, _num(params.get("receivable_current_share"), 1.0))),
     }
 
     rows = []
@@ -178,30 +182,67 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
     floor = _num(params.get("cash_floor_opex_share"), 0.0)
     cash_live = bool(np.isfinite(cash0)) and buf > 0 and not params.get("legacy_loss_assets")
     legacy = bool(params.get("legacy_loss_assets"))
-    # refinancing (separate assumption): short-term bank debt moved to long-term in year 1
+    # refinancing (separate assumption): short-term bank debt moved to long-term, in the start
+    # year or the first year after it in which the previous year's rating meets the minimum
     nts = params.get("near_term_maturity_share", 0.0)
     refi = saving = 0.0
     refi_share = max(0.0, _num(params.get("refinance_share"), 0.0))
-    if refi_share > 0 and not legacy:
-        std0 = _num(base_row.get("Short Term Debt"), float("nan"))
-        std_base = std0 if np.isfinite(std0) else _num(nts, 0.0) * state["TotalLiabilities"]
-        refi = min(refi_share * max(0.0, std_base), max(0.0, state["CurrentLiabilities"]))
-        st_rate = _num(params.get("short_term_debt_rate"), 0.0)
-        lt_rate = _num(params.get("refinance_long_term_rate"), 0.0)
-        saving = refi * (st_rate - lt_rate)                     # interest saved on the refinanced debt, every year
-        if state["TotalLiabilities"]:
-            nts = max(0.0, _num(nts, 0.0) - refi / state["TotalLiabilities"])  # refinanced debt no longer rolls over
-        state["CurrentLiabilities"] -= refi                     # moved to non-current: total liabilities unchanged
-        state["Refinanced"] = refi
-    # cash waterfall: priority of payments, no new borrowing
+    refi_start = max(1, int(round(_num(params.get("refinance_start_year"), 1.0))))
+    refi_min = str(params.get("refinance_min_rating") or "")
+    refi_done = False
+    # cash waterfall: priority of payments
     wf_on = _num(params.get("waterfall_on"), 0.0) > 0 and not legacy
     ipp_share = min(1.0, max(0.0, _num(params.get("ipp_cost_share"), 0.0)))
+    stat_share = min(1.0, max(0.0, _num(params.get("statutory_cost_share"), 0.0)))
+    floor_share = min(1.0, max(0.0, _num(params.get("om_floor_share"), 0.0)))
+    jun_share = min(1.0, max(0.0, _num(params.get("junior_share"), 0.0)))
     reserve_months = max(0.0, _num(params.get("reserve_months"), 0.0))
+    ranks = waterfall_ranks(params)
+    rule = str(params.get("shortfall_rule") or "soe")
+    wf_start = max(1, int(round(_num(params.get("waterfall_start_year"), 1.0))))
+    wf_ramp = max(0.0, _num(params.get("waterfall_rampup_months"), 0.0))
+    wf_share = (min(1.0, max(0.0, _num(params.get("waterfall_coverage"), 1.0)))
+                * min(1.0, max(0.0, _num(params.get("waterfall_compliance"), 1.0))))
+    r_pri = _num(params.get("late_rate_priority"), 0.0)
+    r_dbt = _num(params.get("late_rate_debt"), 0.0)
+    r_oth = _num(params.get("late_rate_other"), 0.0)
+    disc0 = min(1.0, max(0.0, _num(params.get("priority_discount"), 0.0)))
+    uplift = max(0.0, _num(params.get("state_paid_uplift"), 0.0))
     dep = _num(base_row.get("Depreciation"), 0.0)
+    tax0 = max(0.0, _num(base_row.get("Tax Expense"), 0.0))
     cap = _num(params.get("borrowing_cap_debt_to_assets"), 0.0)  # 0 = no cap
     grants_known = bool(np.isfinite(_num(base_row.get("Government Grants"), float("nan"))))
+    # baseline: tariff gap, collections, demand
+    crr = max(0.0, _num(params.get("cost_recovery_ratio"), 0.0))
+    gap_state = min(1.0, max(0.0, _num(params.get("tariff_gap_state_share"), 1.0)))
+    seg = [(_num(params.get("share_households"), 0.0), _num(params.get("collect_households"), 1.0)),
+           (_num(params.get("share_large_private"), 0.0), _num(params.get("collect_large_private"), 1.0)),
+           (_num(params.get("share_public"), 0.0), _num(params.get("collect_public"), 1.0))]
+    seg_w = sum(max(0.0, w) for w, _ in seg)
+    coll = sum(max(0.0, w) * min(1.0, max(0.0, c)) for w, c in seg) / seg_w if seg_w > 0 else 1.0
+    cust_collect = min(1.0, max(0.0, _num(params.get("customer_arrears_collected"), 0.5)))
+    growth = _num(params.get("demand_growth"), 0.0)
+    losses = _num(params.get("losses_change"), 0.0)
+    rev0, opex0 = base_row["Revenues"], base_row["Operating Expense"]
 
     for t in range(1, horizon_years + 1):
+        if refi_share > 0 and not legacy and not refi_done and t >= refi_start and (not refi_min or rating_at_least(rows[-1]["Rating"], refi_min)):
+            std0 = _num(base_row.get("Short Term Debt"), float("nan"))
+            std_base = std0 if np.isfinite(std0) else _num(nts, 0.0) * state["TotalLiabilities"]
+            refi = min(refi_share * max(0.0, std_base), max(0.0, state["CurrentLiabilities"]))
+            st_rate = _num(params.get("short_term_debt_rate"), 0.0)
+            lt_rate = _num(params.get("refinance_long_term_rate"), 0.0)
+            saving = refi * (st_rate - lt_rate)                 # interest saved on the refinanced debt, every year from now on
+            if state["TotalLiabilities"]:
+                nts = max(0.0, _num(nts, 0.0) - refi / state["TotalLiabilities"])  # refinanced debt no longer rolls over
+            state["CurrentLiabilities"] -= refi                 # moved to non-current: total liabilities unchanged
+            state["Refinanced"] = refi
+            refi_done = True
+        if growth:                                              # demand growth scales sales and cash operating costs
+            g_t = (1.0 + growth) ** t
+            state["Revenue"], state["OpEx"] = rev0 * g_t, opex0 * g_t
+        # share of this year's cash routed through the waterfall (0 before it starts)
+        alpha = wf_share * ramp_share(t - wf_start, wf_ramp) if (wf_on and t >= wf_start) else 0.0
         active = t <= duration
         if fpath is None:                                                 # step: full magnitude while the shock is on
             p_fuel, fuel_active = params["fuel_shock_pct"], active
@@ -209,10 +250,17 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
             p_fuel = fpath[t - 1] if t <= len(fpath) else 0.0
             fuel_active = p_fuel != 0
 
+        cust_rev = state["Revenue"] - grants                              # what customers are billed (revenue less compensation)
+        comp_gap = d_ebit_crr = 0.0
+        if crr > 0:                                                       # cost-recovery ratio replaces the data's tariff level
+            d_rc = crr * (state["OpEx"] + base_row["Interest Expense"]) - cust_rev
+            comp_gap = max(-grants, -d_rc * gap_state)                    # change in the State's tariff compensation
+            d_ebit_crr = d_rc + comp_gap                                  # the part of the tariff change the State does not offset
+            cust_rev = cust_rev + d_rc
         fuel_cost_increase = tariff_revenue = customer_share = compensation = trapped_vat = d_ebit_fuel = 0.0
         if fuel_active:
             fuel_cost_increase = params["fuel_cost_share"] * state["OpEx"] * eps * p_fuel
-            tariff_base = max(0.0, state["Revenue"] - grants) if ex_grants else state["Revenue"]
+            tariff_base = (max(0.0, cust_rev) if crr > 0 else max(0.0, state["Revenue"] - grants)) if ex_grants else state["Revenue"]
             tariff_revenue = tariff_up * tariff_base                      # Option B: end-user tariff increase
             remaining = fuel_cost_increase - tariff_revenue               # left after the tariff increase
             if tariff_revenue > 0 and remaining < 0:
@@ -234,14 +282,35 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
             d_ebit_fx = d_ebit_revenue = 0.0
             d_interest = d_equity_fx_reval = d_current_assets_arrears = 0.0
 
-        # State compensation: recognised vs. paid in cash
-        paid_now = compensation * paid_share if compensation > 0 else compensation  # a saving is settled at once
-        unpaid = compensation - paid_now
+        # State compensation (fuel, and any change in the tariff gap): recognised vs. paid in cash
+        p_share = min(1.0, paid_share + uplift * alpha) if (uplift > 0 and alpha > 0) else paid_share
+        comp_all = compensation + comp_gap
+        paid_now = comp_all * p_share if comp_all > 0 else comp_all  # a saving is settled at once
+        unpaid = comp_all - paid_now
         provision = unpaid * provision_share                     # unpaid amount written off as a loss
         collected = state["Receivable"] * collect_share          # earlier years' unpaid compensation arriving now
         d_receivable = unpaid - provision - collected
+        # customers' unpaid bills (collection rates by segment)
+        billed = cust_rev + tariff_revenue + customer_share
+        d_cust = billed * (1.0 - coll) - state["CustArrears"] * cust_collect
 
-        ebit_t = base_row["Operating Profits (EBIT)"] + d_ebit_fuel + d_ebit_fx + d_ebit_revenue
+        # bills by tier (waterfall), and what the priority creditors give back for their priority
+        opex = state["OpEx"]
+        fuel_base = params["fuel_cost_share"] * opex
+        disc = disc0 * alpha if wf_on else 0.0
+        d_ebit_extra = 0.0
+        if growth:
+            d_ebit_extra += (g_t - 1.0) * (rev0 - (opex0 - dep))         # margin before depreciation grows with demand
+        if losses:
+            d_ebit_extra -= losses * cust_rev                             # sales lost to higher losses at the same cost
+        if crr > 0:
+            d_ebit_extra += d_ebit_crr
+        if disc > 0:
+            d_ebit_extra += disc * (fuel_base + max(0.0, fuel_cost_increase) + ipp_share * opex)
+        interest_late = (r_pri * (state["ArrIPP"] + state["ArrFuel"]) + r_dbt * state["ArrDebt"]
+                         + r_oth * (state["ArrStat"] + state["ArrFloor"] + state["ArrOps"] + state["ArrJun"]))
+
+        ebit_t = base_row["Operating Profits (EBIT)"] + d_ebit_fuel + d_ebit_fx + d_ebit_revenue + d_ebit_extra
         # NI carries forward the SOE's ACTUAL reported Net Income, plus only
         # the shock's incremental effect — not a recomputation from
         # EBIT-Interest-Tax, which ignores other income/expense/tax-timing
@@ -250,54 +319,80 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         # Net Income exactly, every year.
         d_ebit_total = d_ebit_fuel + d_ebit_fx + d_ebit_revenue
         interest_open = rate * (state["ShortTermDebt"] + state["LongTermDebt"])
-        ni_before_new = base_row["Net Income"] + d_ebit_total - d_interest - provision - interest_open + saving
+        ni_before_new = base_row["Net Income"] + d_ebit_total - d_interest - provision - interest_open + saving + d_ebit_extra - interest_late
 
         # cash the SOE has to find this year (negative = surplus)
-        need = -ni_before_new + d_receivable + trapped_vat
+        need = -ni_before_new + d_receivable + trapped_vat + d_cust
         funding = interest_new = repaid = left_over = draw = rebuilt = support = 0.0
-        u_ipp = u_fuel = u_debt = u_ops = r_draw = top_up = 0.0
-        if wf_on:                                                # the year's bills by priority tier
-            opex = state["OpEx"]
-            fuel_base = params["fuel_cost_share"] * opex
-            due_ipp = ipp_share * opex
-            due_fuel = max(0.0, fuel_base + fuel_cost_increase)
-            due_debt = max(0.0, base_row["Interest Expense"] + d_interest + interest_open - saving)
-            due_ops = max(0.0, opex - dep - due_ipp - fuel_base)
+        unpaid_t = dict.fromkeys(_TIER_KEYS, 0.0)
+        r_draw = top_up = state_pay = 0.0
+        if wf_on:                                                # the year's bills by tier
+            own = max(0.0, opex - dep - ipp_share * opex - fuel_base - stat_share * opex)
+            jun_bill = jun_share * own
+            soe_part = own - jun_bill
+            floor_bill = floor_share * soe_part
+            bills = {"ArrStat": tax0 + stat_share * opex + r_oth * state["ArrStat"],
+                     "ArrIPP": ipp_share * opex * (1.0 - disc) + r_pri * state["ArrIPP"],
+                     "ArrFuel": max(0.0, fuel_base + fuel_cost_increase) * (1.0 - disc) + r_pri * state["ArrFuel"],
+                     "ArrDebt": max(0.0, base_row["Interest Expense"] + d_interest + interest_open - saving) + r_dbt * state["ArrDebt"],
+                     "ArrFloor": floor_bill + r_oth * state["ArrFloor"],
+                     "ArrOps": soe_part - floor_bill + r_oth * state["ArrOps"],
+                     "ArrJun": jun_bill + r_oth * state["ArrJun"]}
+            target = reserve_months / 12.0 * (bills["ArrIPP"] + bills["ArrDebt"])
         if need > 0:
             if cash_live:                                        # cash first, down to the floor
                 draw = min(need, max(0.0, state["Cash"] - floor * state["OpEx"])) * buf
-            if wf_on:                                            # nothing borrowed: the shortfall is left unpaid from the bottom tier up
-                gap = need - draw
-                u_ops = min(gap, due_ops); gap -= u_ops          # (5) own operations and other suppliers
-                r_draw = min(gap, state["Reserve"]); gap -= r_draw  # (4) the reserve protects the priority tiers
-                u_debt = min(gap, due_debt); gap -= u_debt       # (3) debt service
-                u_fuel = min(gap, due_fuel); gap -= u_fuel       # (2) fuel
-                u_ipp = min(gap, due_ipp); gap -= u_ipp          # (1) IPPs, last
-                u_ops += gap                                     # anything beyond the year's bills stays in the bottom tier
+            gap = need - draw
+            if alpha > 0:                                        # the routed share is not borrowed
+                gap_w = gap * alpha
+                gap_b = gap - gap_w
+                for rk in sorted(set(ranks.values()), reverse=True):        # lowest priority first
+                    if rk == ranks["reserve"]:                   # the reserve protects the tiers at or above its rank
+                        d = min(gap_w, state["Reserve"]); r_draw += d; gap_w -= d
+                    if rule == "state":
+                        continue
+                    grp = [k for k in _TIER_KEYS if ranks[_TIER_RANK[k]] == rk]
+                    tot = sum(bills[k] for k in grp)
+                    if tot > 0 and gap_w > 0:
+                        u = min(gap_w, tot)
+                        for k in grp:
+                            unpaid_t[k] += u * (bills[k] / tot)
+                        gap_w -= u
+                if rule == "state":                              # the State pays what the waterfall cannot
+                    state_pay = gap_w
+                else:
+                    unpaid_t["ArrOps"] += gap_w                  # anything beyond the year's bills stays with the SOE's own operations
             else:
-                funding = (need - draw) / (1 - (k_int * rate) / 2)   # the rest borrowed, grossed up for half a year of interest
+                gap_b = gap
+            if gap_b > 0:                                        # the rest is borrowed, grossed up for half a year of interest
+                funding = gap_b / (1 - (k_int * rate) / 2)
                 if cap > 0:                                      # borrowing stops at the debt-to-assets cap; the State injects the rest
                     ta_new = state["TotalAssets"] + d_receivable + trapped_vat + d_current_assets_arrears - draw
                     room = max(0.0, cap * ta_new - (state["TotalLiabilities"] - d_equity_fx_reval))
                     if funding > room:
                         funding = room
-                        support = (need - draw) - funding * (1 - (k_int * rate) / 2)
+                        support = gap_b - funding * (1 - (k_int * rate) / 2)
                 interest_new = (rate * k_int * funding) / 2
         else:                                                    # surplus: arrears in priority order, then short-term debt
             surplus = -need
             if wf_on:
-                for k in ("ArrIPP", "ArrFuel", "ArrDebt"):       # priority creditors first
-                    r = min(surplus, state[k]); state[k] -= r; surplus -= r; repaid += r
-                target = reserve_months / 12.0 * (due_ipp + due_debt)
-                top_up = min(surplus, max(0.0, target - state["Reserve"])); surplus -= top_up
-                r = min(surplus, state["ArrOps"]); state["ArrOps"] -= r; surplus -= r; repaid += r
+                for rk in sorted(set(ranks.values())):           # highest priority first
+                    grp = [k for k in _TIER_KEYS if ranks[_TIER_RANK[k]] == rk]
+                    tot = sum(state[k] for k in grp)
+                    if tot > 0 and surplus > 0:
+                        r = min(surplus, tot)
+                        for k in grp:
+                            state[k] -= r * (state[k] / tot)
+                        surplus -= r; repaid += r
+                    if rk == ranks["reserve"] and alpha > 0:     # then the reserve, at its rank
+                        top_up = min(surplus, max(0.0, target - state["Reserve"])); surplus -= top_up
             r_bank = min(surplus, state["ShortTermDebt"]); state["ShortTermDebt"] -= r_bank; surplus -= r_bank
             r_ap = min(surplus, state["SupplierArrears"]); state["SupplierArrears"] -= r_ap; surplus -= r_ap
             repaid += r_bank + r_ap
             left_over = surplus
             if cash_live:                                        # rebuilds the cash drawn in earlier years, no further
                 rebuilt = min(left_over, state["CashDrawn"])
-        wf_unpaid = u_ipp + u_fuel + u_debt + u_ops
+        wf_unpaid = sum(unpaid_t.values())
         net_income_t = ni_before_new - interest_new
         f_short = funding * st_share
         f_ap = f_short * ap_share
@@ -309,15 +404,18 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         state["LongTermDebt"] += f_long
         state["Receivable"] += d_receivable
         state["TrappedVAT"] += trapped_vat
+        state["CustArrears"] += d_cust
         state["RetainedEarnings"] = state["RetainedEarnings"] + net_income_t
-        state["Equity"] = state["Equity"] + net_income_t + d_equity_fx_reval + support
+        state["Equity"] = state["Equity"] + net_income_t + d_equity_fx_reval + support + state_pay
         state["Support"] += support
-        state["ArrIPP"] += u_ipp; state["ArrFuel"] += u_fuel; state["ArrDebt"] += u_debt; state["ArrOps"] += u_ops
+        state["StateShortfall"] += state_pay
+        for k in _TIER_KEYS:
+            state[k] += unpaid_t[k]
         state["Reserve"] += top_up - r_draw
         state["CurrentLiabilities"] = state["CurrentLiabilities"] + (f_short + wf_unpaid - repaid)
         state["TotalLiabilities"] = state["TotalLiabilities"] + (funding + wf_unpaid - repaid - d_equity_fx_reval)
-        state["CurrentAssets"] = state["CurrentAssets"] + (d_receivable + trapped_vat + d_current_assets_arrears)
-        state["TotalAssets"] = state["TotalAssets"] + (d_receivable + trapped_vat + d_current_assets_arrears + left_over + top_up - r_draw)
+        state["CurrentAssets"] = state["CurrentAssets"] + (d_receivable + trapped_vat + d_current_assets_arrears) + d_cust
+        state["TotalAssets"] = state["TotalAssets"] + (d_receivable + trapped_vat + d_current_assets_arrears + left_over + top_up - r_draw) + d_cust
         if params.get("legacy_loss_assets") and need > 0:
             state["TotalAssets"] += min(0.0, net_income_t)       # original rule: a borrowed loss also cuts total assets
         if draw:                                                 # cash paid out leaves current and total assets
@@ -327,13 +425,14 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
             state["Cash"] += rebuilt; state["CashDrawn"] -= rebuilt
             state["CurrentAssets"] += rebuilt
         state["EBIT"] = ebit_t
-        state["Interest"] = base_row["Interest Expense"] + d_interest + interest_open + interest_new - saving
+        state["Interest"] = base_row["Interest Expense"] + d_interest + interest_open + interest_new - saving + interest_late
 
         flows = {"inc": fuel_cost_increase, "tariff": tariff_revenue, "cust": customer_share, "comp": compensation,
                  "paid": paid_now + collected, "provision": provision, "vat": trapped_vat, "fund": funding, "draw": draw,
                  "interest_new": interest_open + interest_new, "ni": net_income_t, "support": support, "saving": saving,
-                 "wf_unpaid": wf_unpaid, "u_ops": u_ops, "r_draw": r_draw, "top_up": top_up,
-                 "rma_share": _ratio(state["Revenue"] - grants + tariff_revenue + customer_share, state["Revenue"] + fuel_cost_increase) if grants_known else float("nan")}
+                 "wf_unpaid": wf_unpaid, "u_ops": unpaid_t["ArrOps"] + unpaid_t["ArrFloor"], "r_draw": r_draw, "top_up": top_up,
+                 "state_pay": state_pay, "late": interest_late, "alpha": alpha, "comp_gap": comp_gap, "d_cust": d_cust,
+                 "rma_share": _ratio(cust_rev + tariff_revenue + customer_share, state["Revenue"] + fuel_cost_increase) if grants_known else float("nan")}
         rows.append(_snapshot(base_row["Entity"], base_row.get("Sector", ""), int(base_row["Year"]) + t, t, state, flows))
 
     return pd.DataFrame(rows)
@@ -346,6 +445,111 @@ def _num(v, default):
     except (TypeError, ValueError):
         return default
     return v if np.isfinite(v) else default
+
+
+def _clamp01(v):
+    return min(1.0, max(0.0, v))
+
+
+# waterfall tiers: state key -> the WATERFALL_TIERS rank it takes ("residual" is split by the shortfall rule)
+_TIER_KEYS = ["ArrStat", "ArrIPP", "ArrFuel", "ArrDebt", "ArrFloor", "ArrOps", "ArrJun"]
+_TIER_RANK = {"ArrStat": "statutory", "ArrIPP": "ipp", "ArrFuel": "fuel", "ArrDebt": "debt", "ArrFloor": "om_floor",
+              "ArrOps": "ops", "ArrJun": "junior"}
+
+
+def waterfall_ranks(params) -> dict:
+    """Rank of each tier (lower = paid first, equal = pari passu) for the order in
+    params["waterfall_order"] (config.WATERFALL_ORDERS; "custom" reads the rank_*
+    settings). The SOE's own operations above the floor ("ops") and the junior
+    creditors share the residual rank; the shortfall rule puts one of them half a
+    rank lower (it absorbs a shortfall first) or keeps them together (pro rata)."""
+    key = str(params.get("waterfall_order") or "senelec_note")
+    preset = config.WATERFALL_ORDERS.get(key) or config.WATERFALL_ORDERS["senelec_note"]
+    if preset.get("ranks") is None:                              # custom
+        dflt = config.WATERFALL_ORDERS["senelec_note"]["ranks"]
+        base = {k: _num(params.get("rank_" + k), float(dflt[k])) for k in config.WATERFALL_TIERS}
+    else:
+        base = {k: float(v) for k, v in preset["ranks"].items()}
+    rule = str(params.get("shortfall_rule") or "soe")
+    b = base["residual"]
+    if rule == "junior":
+        ops, jun = b, b + 0.5
+    elif rule == "pro_rata":
+        ops = jun = b
+    else:                                                        # "soe" and "state"
+        ops, jun = b + 0.5, b
+    out = {k: base[k] for k in ["statutory", "ipp", "fuel", "debt", "reserve", "om_floor"]}
+    out.update(ops=ops, junior=jun)
+    return out
+
+
+def ramp_share(k, months):
+    """Average share of the waterfall in force during year k after its start
+    (k = 0 is the start year) under a linear phase-in over `months`."""
+    if months <= 0:
+        return 1.0
+    a, b = 12.0 * k, 12.0 * (k + 1)
+    if a >= months:
+        return 1.0
+    hi = min(b, months)                                          # integral of m / months over [a, hi], then 1 over [hi, b]
+    return ((hi * hi - a * a) / (2.0 * months) + (b - hi)) / 12.0
+
+
+# the D band: its upper Z bound and PD anchor the logistic tail
+_Z_D = config.Z_RATING_TABLE[-1][1]
+_PD_D = config.Z_RATING_TABLE[-1][3]
+
+
+def _logistic(x):
+    return 1.0 / (1.0 + np.exp(-x)) if np.isfinite(x) else float("nan")
+
+
+def pd_value(z, rating, debt_default, params=None) -> float:
+    """PD for one projection year under params["pd_method"]: "rating" (the band
+    PD, as before), "rating_tail" (band PDs, and below the D threshold a logistic
+    tail that starts at the D band's PD and rises towards 100% with slope
+    pd_logit_b), "logistic" (1 / (1 + exp(-(a + b Z))) for every Z) or "user" (a
+    fixed annual PD). A year with debt service unpaid takes pd_on_default."""
+    p = params or {}
+    if debt_default:
+        return _num(p.get("pd_on_default"), 1.0)
+    method = str(p.get("pd_method") or "rating")
+    if method == "user":
+        return min(1.0, max(0.0, _num(p.get("pd_user"), 0.10)))
+    b = _num(p.get("pd_logit_b"), -1.17)
+    if method == "logistic":
+        return _logistic(_num(p.get("pd_logit_a"), -2.18) + b * z) if np.isfinite(z) else float("nan")
+    if method == "rating_tail" and np.isfinite(z) and z < _Z_D:
+        return _logistic(np.log(_PD_D / (1.0 - _PD_D)) + b * (z - _Z_D))
+    return compute_pd_from_rating(rating)
+
+
+def add_cost(path: pd.DataFrame, lgd_pct: float, ead_share: float = 1.0, params=None, gdp_series=None) -> pd.DataFrame:
+    """PD (pd_value), EAD = ead_share x total liabilities, LGD, EFC = PD x EAD x LGD,
+    and EFC / GDP when a GDP path is given."""
+    path = path.copy()
+    dd = path["Debt Default"] if "Debt Default" in path.columns else pd.Series(0.0, index=path.index)
+    path["PD"] = [pd_value(z, r, d > 0, params) for z, r, d in zip(path["Z_EM"], path["Rating"], dd)]
+    path["EAD"] = path["Total Liabilities"] * ead_share
+    path["LGD"] = lgd_pct / 100.0
+    path["EFC"] = path["PD"] * path["EAD"] * path["LGD"]
+    if gdp_series is not None:
+        path["EFC_GDP"] = path["EFC"] / pd.Series(list(gdp_series)[: len(path)], index=path.index)
+    return path
+
+
+def cumulative_pd(pds) -> float:
+    """Probability of at least one default over the projection years: 1 - prod(1 - PD_t)."""
+    q = 1.0
+    for v in pds:
+        q *= 1.0 - min(1.0, max(0.0, v)) if v == v else 1.0
+    return 1.0 - q
+
+
+def rating_at_least(rating, minimum) -> bool:
+    """True when `rating` is at or above `minimum` on the Z-EM rating scale."""
+    order = [r for _lo, _hi, r, _pd in config.Z_RATING_TABLE]
+    return rating in order and minimum in order and order.index(rating) <= order.index(minimum)
 
 
 def _fuel_path(params):
@@ -364,7 +568,8 @@ def _ratio(a, b):
 
 
 def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
-    working_capital = state["CurrentAssets"] - state["CurrentLiabilities"]
+    ca = state["CurrentAssets"] - (1.0 - state["RecvCurrent"]) * state["Receivable"]  # part of the State receivable may be non-current
+    working_capital = ca - state["CurrentLiabilities"]
     x1, x2, x3, x4, z, zone = classify_zem_from_values(
         working_capital=working_capital,
         total_assets=state["TotalAssets"],
@@ -373,8 +578,9 @@ def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
         equity=state["Equity"],
         total_liabilities=state["TotalLiabilities"],
     )
-    illiquid = state["IlliquidOpen"] + state["Receivable"] + state["TrappedVAT"]
+    illiquid = state["IlliquidOpen"] + state["Receivable"] + state["TrappedVAT"] + state["CustArrears"]   # customer arrears are slow to collect too
     f = lambda k: flows.get(k, 0.0)
+    default = bool(state["DefaultRule"] and state["ArrDebt"] > 0)   # debt service unpaid: rated D
     return {
         "Entity": entity,
         "Sector": sector,
@@ -387,10 +593,11 @@ def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
         "Equity": state["Equity"],
         "Total Liabilities": state["TotalLiabilities"],
         "Total Assets": state["TotalAssets"],
-        "Current Assets": state["CurrentAssets"],
+        "Current Assets": ca,
         "Current Liabilities": state["CurrentLiabilities"],
         "X1": x1, "X2": x2, "X3": x3, "X4": x4,
-        "Z_EM": z, "Zone": zone, "Rating": config.z_rating(z),
+        "Z_EM": z, "Zone": zone, "Rating": "D" if default else config.z_rating(z),
+        "Debt Default": 1.0 if default else 0.0,
         # the government's recognised share of the fuel-cost change (Case C)
         "Direct Fuel Subsidy": f("comp"),
         # flows of the year
@@ -405,7 +612,12 @@ def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
         "Interest on New Debt": f("interest_new"),
         "Interest Saved": f("saving"),                  # refinancing: short-term debt at the long-term rate
         "Unpaid Under Waterfall": f("wf_unpaid"),       # the year's shortfall left unpaid, all tiers
-        "Underfunded Operations": f("u_ops"),           # of which the bottom tier: the SOE's own operations and other suppliers
+        "Underfunded Operations": f("u_ops"),           # of which the SOE's own operations (floor and above)
+        "State Shortfall Payment": f("state_pay"),      # the State pays the waterfall's shortfall (shortfall rule "state")
+        "Late-payment Interest": f("late"),             # interest on arrears outstanding at the start of the year
+        "Waterfall Routed Share": f("alpha"),           # share of the year's cash routed through the waterfall
+        "Tariff Gap Compensation Change": f("comp_gap"),  # change in State compensation from the cost-recovery ratio
+        "Customer Arrears Change": f("d_cust"),
         "Reserve Draw": f("r_draw"),
         "Reserve Top-up": f("top_up"),
         "Emergency Support": f("support"),              # government injection above the borrowing cap
@@ -421,11 +633,16 @@ def _snapshot(entity, sector, calendar_year, t, state, flows) -> dict:
         "Arrears to IPPs": state["ArrIPP"],             # cash waterfall: unpaid bills by priority tier
         "Arrears to Fuel Suppliers": state["ArrFuel"],
         "Missed Debt Service": state["ArrDebt"],
-        "Arrears on Own Operations": state["ArrOps"],
+        "Arrears on Own Operations": state["ArrOps"],     # above the O&M floor
+        "Arrears on O&M Floor": state["ArrFloor"],
+        "Arrears to Junior Creditors": state["ArrJun"],
+        "Arrears to Statutory and Operator": state["ArrStat"],
+        "Customer Arrears": state["CustArrears"],
+        "Cumulative State Shortfall Payment": state["StateShortfall"],
         "Reserve Account": state["Reserve"],
         "Cumulative Emergency Support": state["Support"],
         # liquidity and solvency
-        "Current Ratio": _ratio(state["CurrentAssets"], state["CurrentLiabilities"]),
+        "Current Ratio": _ratio(ca, state["CurrentLiabilities"]),
         "Adjusted Current Ratio": _ratio(state["CurrentAssets"] - illiquid, state["CurrentLiabilities"]),
         "Debt to Assets": _ratio(state["TotalLiabilities"], state["TotalAssets"]),
     }
@@ -489,6 +706,8 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
     two-variable version for the same seed.
     Returns a LONG-format DataFrame — one row per (simulation, year)."""
     rng = np.random.default_rng(seed)
+    draw_defaults = _num(params.get("mc_default_draws"), 1.0) > 0
+    u_def = np.random.default_rng(seed + 1).random((n_sims, max(1, horizon_years)))   # separate stream: shock draws unchanged
     corrs = dict(correlations) if correlations else {}
     corrs.setdefault("fuel|fx", correlation)
     names = ["fuel", "fx"] + (["rate"] if rate_std_bps > 0 else []) + (["revenue"] if revenue_std_sd > 0 else [])
@@ -528,13 +747,37 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
         scenario["sim"] = i
         for n in names:
             scenario[{"fuel": "fuel_shock_pct", "fx": "fx_shock_pct", "rate": "rate_shock_bps", "revenue": "revenue_shock_std_devs"}[n]] = drawn[n]
-        scenario["PD"] = scenario["Rating"].apply(compute_pd_from_rating)
-        scenario["EAD"] = scenario["Total Liabilities"] * ead_share
-        scenario["LGD"] = lgd_pct / 100.0
-        scenario["EFC"] = scenario["PD"] * scenario["EAD"] * scenario["LGD"]
+        scenario = add_cost(scenario, lgd_pct, ead_share, params)
+        # materialisation: the path defaults in the first year a draw falls below that year's PD, or debt service goes unpaid
+        dflt_year, cost = 0, 0.0
+        if draw_defaults:
+            for t in range(1, len(scenario)):
+                pdt = scenario["PD"].iloc[t]
+                if scenario["Debt Default"].iloc[t] > 0 or (pdt == pdt and u_def[i, t - 1] < pdt):
+                    dflt_year, cost = int(scenario["Projection Year"].iloc[t]), float(scenario["EAD"].iloc[t] * scenario["LGD"].iloc[t])
+                    break
+        scenario["Default Year"] = dflt_year                     # 0 = no default over the horizon
+        scenario["Realised Cost"] = [cost if int(y) == dflt_year and dflt_year else 0.0 for y in scenario["Projection Year"]]
         all_rows.append(scenario)
 
     return pd.concat(all_rows, ignore_index=True)
+
+
+def mc_default_summary(mc_long: pd.DataFrame, gdp_series=None) -> dict:
+    """Materialisation from a run_monte_carlo result: share of simulations that
+    default within the horizon, by year, and the realised cost to the State
+    (EAD x LGD in the default year; 0 otherwise): mean, 95th and 99th percentiles,
+    in currency and, with a GDP path, as a share of GDP in the default year."""
+    sims = mc_long.groupby("sim")
+    dy = sims["Default Year"].first()
+    cost = sims["Realised Cost"].sum()
+    out = {"p_default": float((dy > 0).mean()), "by_year": {int(y): float((dy == y).mean()) for y in sorted(set(dy)) if y > 0},
+           "cost_mean": float(cost.mean()), "cost_p95": float(cost.quantile(0.95)), "cost_p99": float(cost.quantile(0.99))}
+    if gdp_series is not None:
+        g = list(gdp_series)
+        share = mc_long.assign(_g=[g[int(t)] for t in mc_long["Projection Year"]]).eval("`Realised Cost` / _g").groupby(mc_long["sim"]).sum()
+        out.update(cost_gdp_mean=float(share.mean()), cost_gdp_p95=float(share.quantile(0.95)), cost_gdp_p99=float(share.quantile(0.99)))
+    return out
 
 
 def mc_percentile_path(mc_long: pd.DataFrame, value_col: str,
@@ -608,11 +851,24 @@ def _policy_suffix(params):
     pol = []
     legacy = params.get("legacy_loss_assets")
     if _num(params.get("waterfall_on"), 0.0) > 0 and not legacy:
-        pol.append("cash waterfall")
+        order = config.WATERFALL_ORDERS.get(str(params.get("waterfall_order") or "senelec_note"), config.WATERFALL_ORDERS["senelec_note"])
+        extra = [order["short"]]
+        share = _clamp01(_num(params.get("waterfall_coverage"), 1.0)) * _clamp01(_num(params.get("waterfall_compliance"), 1.0))
+        if share < 1:
+            extra.append(f"{share * 100:.0f}% of cash routed")
+        if str(params.get("shortfall_rule") or "soe") == "state":
+            extra.append("State covers the shortfall")
+        pol.append("cash waterfall (" + ", ".join(extra) + ")")
+    crr = _num(params.get("cost_recovery_ratio"), 0.0)
+    if crr > 0:
+        pol.append(f"cost recovery {crr * 100:.0f}%")
     refi = _num(params.get("refinance_share"), 0.0)
     if refi > 0 and not legacy:
         pol.append(f"{refi:.0%} of short-term debt refinanced")
     cap = _num(params.get("borrowing_cap_debt_to_assets"), 0.0)
     if cap > 0:
         pol.append(f"borrowing cap {cap:.2f} debt/assets")
+    method = str(params.get("pd_method") or "rating")
+    if method != "rating":
+        pol.append({"rating_tail": "PD: rating bands with a logistic tail", "logistic": "PD: logistic in Z-EM", "user": "PD: user-specified"}.get(method, "PD: " + method))
     return (" · " + ", ".join(pol)) if pol else ""

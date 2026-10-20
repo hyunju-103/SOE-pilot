@@ -134,14 +134,9 @@ def _params(row, df_all, mags, duration, horizon, overrides=None):
     return p
 
 
-def _cost(path, lgd_pct, ead_share, gdp_series=None):
-    path = path.copy()
-    path["PD"] = path["Rating"].apply(calculations.compute_pd_from_rating)
-    path["EAD"] = path["Total Liabilities"] * ead_share
-    path["EFC"] = path["PD"] * path["EAD"] * (lgd_pct / 100.0)
-    if gdp_series is not None:
-        path["EFC_GDP"] = path["EFC"] / pd.Series(gdp_series[: len(path)], index=path.index)
-    return path
+def _cost(path, lgd_pct, ead_share, gdp_series=None, params=None):
+    """PD (per params["pd_method"]; band PD by default), EAD, EFC and EFC/GDP — shocks.add_cost."""
+    return shocks.add_cost(path, lgd_pct, ead_share, params, gdp_series)
 
 
 def stress_all(df_all: pd.DataFrame, lgd_pct=config.LGD_SLIDER_DEFAULT, ead_share=config.EAD_SHARE_DEFAULT,
@@ -156,8 +151,9 @@ def stress_all(df_all: pd.DataFrame, lgd_pct=config.LGD_SLIDER_DEFAULT, ead_shar
     zero = {k: ([] if k == "fuel_shock_path" else 0.0) for k in MAGNITUDES}
     out = []
     for _, r in latest_per_entity(df_all).iterrows():
-        base = _cost(shocks.run_scenario(r, _params(r, df_all, zero, duration, horizon, overrides), horizon), lgd_pct, ead_share)
-        stress = _cost(shocks.run_scenario(r, _params(r, df_all, mags, duration, horizon, overrides), horizon), lgd_pct, ead_share)
+        pb, ps = _params(r, df_all, zero, duration, horizon, overrides), _params(r, df_all, mags, duration, horizon, overrides)
+        base = _cost(shocks.run_scenario(r, pb, horizon), lgd_pct, ead_share, params=pb)
+        stress = _cost(shocks.run_scenario(r, ps, horizon), lgd_pct, ead_share, params=ps)
         drop = any(ZONE_RANK.get(s, 9) < ZONE_RANK.get(b, 9) for s, b in zip(stress["Zone"].iloc[1:], base["Zone"].iloc[1:]))
         out.append({"row": r, "base": base, "stress": stress, "drop": bool(drop)})
     return out

@@ -192,6 +192,10 @@
         Cash: isNum(cash0) ? cash0 : 0, CashDrawn: 0,
         Refinanced: 0, Support: 0,
         ArrIPP: 0, ArrFuel: 0, ArrDebt: 0, ArrOps: 0, Reserve: 0, // cash waterfall: arrears by priority tier and the reserve account
+        ArrStat: 0, ArrFloor: 0, ArrJun: 0, StateShortfall: 0, CustArrears: 0,
+        // snapshot rules: a year with debt service unpaid is rated D; share of the State receivable in current assets
+        DefaultRule: num(p.default_on_missed_debt, 1) > 0,
+        RecvCurrent: Math.min(1, Math.max(0, num(p.receivable_current_share, 1))),
       };
       const grants0 = num(base[K.grants], NaN);
       const out = [snap(base, 0, st, { rma: isNum(grants0) ? div(base[K.rev] - grants0, base[K.rev]) : NaN })];
@@ -199,9 +203,9 @@
       const tariffUp = p.tariff_increase_pct || 0;
       const paidShare = num(p.comp_paid_share, 1), collectShare = num(p.comp_backlog_collected, 1), provShare = num(p.comp_provision_share, 0);
       const stShare = num(p.cash_gap_short_term_share, 0), rate = num(p.new_debt_interest_rate, 0);
-      let apShare = num(p.cash_gap_payables_share, 0);
+      const apShare = num(p.cash_gap_payables_share, 0);
       const vatTrap = num(p.vat_rate, 0) * num(p.vat_trapped_share, 0);
-      let kInt = 1 - stShare * apShare; // share of new funding that bears interest (unpaid supplier bills do not)
+      const kInt = 1 - stShare * apShare; // share of new funding that bears interest (unpaid supplier bills do not)
       const eps = num(p.fuel_oil_linkage, 1);                   // share of the fuel bill that moves with the oil price
       const exGrants = p.tariff_revenue_base === "revenue_ex_grants";
       const grants = num(base[K.grants], 0);                     // compensation already booked in revenue
@@ -209,38 +213,68 @@
       const floor = num(p.cash_floor_opex_share, 0);
       const cashLive = isNum(cash0) && buf > 0 && !p.legacy_loss_assets;
       const legacy = !!p.legacy_loss_assets;
-      // refinancing (separate assumption): short-term bank debt moved to long-term in year 1
+      // refinancing (separate assumption): in the start year, or the first year after it in which the previous year's rating meets the minimum
       let nts = p.near_term_maturity_share || 0;
-      let refi = 0, saving = 0;
+      let refi = 0, saving = 0, refiDone = false;
       const refiShare = Math.max(0, num(p.refinance_share, 0));
-      if (refiShare > 0 && !legacy) {
-        const std0 = num(base["Short Term Debt"], NaN);
-        const stdBase = isNum(std0) ? std0 : nts * st.TL;      // reported short-term debt, else the near-term maturity proxy
-        refi = Math.min(refiShare * Math.max(0, stdBase), Math.max(0, st.CL));
-        const stRate = num(p.short_term_debt_rate, 0), ltRate = num(p.refinance_long_term_rate, 0);
-        saving = refi * (stRate - ltRate);                     // interest saved on the refinanced debt, every year
-        if (st.TL) nts = Math.max(0, nts - refi / st.TL);      // refinanced debt no longer rolls over
-        st.CL -= refi;                                         // moved to non-current: total liabilities unchanged
-        st.Refinanced = refi;
-      }
-      // cash waterfall: priority of payments, no new borrowing
+      const refiStart = Math.max(1, Math.round(num(p.refinance_start_year, 1)));
+      const refiMin = p.refinance_min_rating ? String(p.refinance_min_rating) : "";
+      // cash waterfall: priority of payments
+      const clamp01 = (v) => Math.min(1, Math.max(0, v));
       const wfOn = num(p.waterfall_on, 0) > 0 && !legacy;
-      const ippShare = Math.min(1, Math.max(0, num(p.ipp_cost_share, 0)));
+      const ippShare = clamp01(num(p.ipp_cost_share, 0)), statShare = clamp01(num(p.statutory_cost_share, 0));
+      const floorShare = clamp01(num(p.om_floor_share, 0)), junShare = clamp01(num(p.junior_share, 0));
       const reserveMonths = Math.max(0, num(p.reserve_months, 0));
-      const dep = num(base[K.dep], 0);
+      const ranks = waterfallRanks(p), rule = p.shortfall_rule ? String(p.shortfall_rule) : "soe";
+      const wfStart = Math.max(1, Math.round(num(p.waterfall_start_year, 1))), wfRamp = Math.max(0, num(p.waterfall_rampup_months, 0));
+      const wfShare = clamp01(num(p.waterfall_coverage, 1)) * clamp01(num(p.waterfall_compliance, 1));
+      const rPri = num(p.late_rate_priority, 0), rDbt = num(p.late_rate_debt, 0), rOth = num(p.late_rate_other, 0);
+      const disc0 = clamp01(num(p.priority_discount, 0)), uplift = Math.max(0, num(p.state_paid_uplift, 0));
+      const dep = num(base[K.dep], 0), tax0 = Math.max(0, num(base["Tax Expense"], 0));
       const cap = num(p.borrowing_cap_debt_to_assets, 0);     // 0 = no cap
       const grantsKnown = isNum(grants0);
+      // baseline: tariff gap, collections, demand
+      const crr = Math.max(0, num(p.cost_recovery_ratio, 0)), gapState = clamp01(num(p.tariff_gap_state_share, 1));
+      const seg = [[num(p.share_households, 0), num(p.collect_households, 1)], [num(p.share_large_private, 0), num(p.collect_large_private, 1)],
+        [num(p.share_public, 0), num(p.collect_public, 1)]];
+      const segW = seg.reduce((s, [w]) => s + Math.max(0, w), 0);
+      const coll = segW > 0 ? seg.reduce((s, [w, c]) => s + Math.max(0, w) * clamp01(c), 0) / segW : 1;
+      const custCollect = clamp01(num(p.customer_arrears_collected, 0.5));
+      const growth = num(p.demand_growth, 0), losses = num(p.losses_change, 0);
+      const rev0 = base[K.rev], opex0 = base[K.opex];
 
       for (let t = 1; t <= H; t++) {
+        if (refiShare > 0 && !legacy && !refiDone && t >= refiStart && (!refiMin || ratingAtLeast(out[out.length - 1].Rating, refiMin))) {
+          const std0 = num(base["Short Term Debt"], NaN);
+          const stdBase = isNum(std0) ? std0 : nts * st.TL;    // reported short-term debt, else the near-term maturity proxy
+          refi = Math.min(refiShare * Math.max(0, stdBase), Math.max(0, st.CL));
+          const stRate = num(p.short_term_debt_rate, 0), ltRate = num(p.refinance_long_term_rate, 0);
+          saving = refi * (stRate - ltRate);                   // interest saved on the refinanced debt, every year from now on
+          if (st.TL) nts = Math.max(0, nts - refi / st.TL);    // refinanced debt no longer rolls over
+          st.CL -= refi;                                       // moved to non-current: total liabilities unchanged
+          st.Refinanced = refi;
+          refiDone = true;
+        }
+        let gT = 1;
+        if (growth) { gT = (1 + growth) ** t; st.Revenue = rev0 * gT; st.OpEx = opex0 * gT; } // demand growth scales sales and cash costs
+        const alpha = wfOn && t >= wfStart ? wfShare * rampShare(t - wfStart, wfRamp) : 0; // share of this year's cash routed through the waterfall
         const active = t <= dur;
         let pFuel, fuelActive;
         if (fpath === null) { pFuel = p.fuel_shock_pct; fuelActive = active; }       // step: full magnitude while the shock is on
         else { pFuel = t <= fpath.length ? fpath[t - 1] : 0; fuelActive = pFuel !== 0; } // per-year path, zero beyond its end
+        let custRev = st.Revenue - grants;                      // what customers are billed (revenue less compensation)
+        let compGap = 0, dEbitCrr = 0;
+        if (crr > 0) {                                          // cost-recovery ratio replaces the data's tariff level
+          const dRc = crr * (st.OpEx + base[K.int]) - custRev;
+          compGap = Math.max(-grants, -dRc * gapState);          // change in the State's tariff compensation
+          dEbitCrr = dRc + compGap;                              // the part of the tariff change the State does not offset
+          custRev = custRev + dRc;
+        }
         let dFuel = 0, dFx = 0, dRev = 0, dInt = 0, dReval = 0, dArr = 0;
         let inc = 0, tariff = 0, cust = 0, comp = 0, vat = 0;
         if (fuelActive) {
           inc = p.fuel_cost_share * st.OpEx * eps * pFuel;      // fuel-cost change
-          const tBase = exGrants ? Math.max(0, st.Revenue - grants) : st.Revenue;
+          const tBase = exGrants ? (crr > 0 ? Math.max(0, custRev) : Math.max(0, st.Revenue - grants)) : st.Revenue;
           tariff = tariffUp * tBase;                            // Option B: end-user tariff increase
           const rem = inc - tariff;                             // what is left after the tariff increase
           if (tariff > 0 && rem < 0) {
@@ -261,97 +295,181 @@
           dReval = -p.fx_debt_share * st.TL * p.fx_shock_pct;
           dArr = -p.arrears_pct_of_revenue * st.Revenue;
         }
-        // State compensation: recognised vs. paid in cash
-        const paidNow = comp > 0 ? comp * paidShare : comp;    // a saving (cheaper fuel) is settled at once
-        const unpaid = comp - paidNow;
+        // State compensation (fuel, and any change in the tariff gap): recognised vs. paid in cash
+        const pShare = uplift > 0 && alpha > 0 ? Math.min(1, paidShare + uplift * alpha) : paidShare;
+        const compAll = comp + compGap;
+        const paidNow = compAll > 0 ? compAll * pShare : compAll; // a saving (cheaper fuel) is settled at once
+        const unpaid = compAll - paidNow;
         const provision = unpaid * provShare;                  // unpaid amount treated as a loss (method A)
         const collected = st.Recv * collectShare;              // earlier years' unpaid compensation arriving now
         const dRecv = unpaid - provision - collected;
+        // customers' unpaid bills (collection rates by segment)
+        const billed = custRev + tariff + cust;
+        const dCust = billed * (1 - coll) - st.CustArrears * custCollect;
+        // bills by tier (waterfall), and what priority creditors give back for their priority
+        const opex = st.OpEx, fuelBase = p.fuel_cost_share * opex;
+        const disc = wfOn ? disc0 * alpha : 0;
+        let dExtra = 0;
+        if (growth) dExtra += (gT - 1) * (rev0 - (opex0 - dep));  // margin before depreciation grows with demand
+        if (losses) dExtra -= losses * custRev;                    // sales lost to higher losses at the same cost
+        if (crr > 0) dExtra += dEbitCrr;
+        if (disc > 0) dExtra += disc * (fuelBase + Math.max(0, inc) + ippShare * opex);
+        const intLate = rPri * (st.ArrIPP + st.ArrFuel) + rDbt * st.ArrDebt + rOth * (st.ArrStat + st.ArrFloor + st.ArrOps + st.ArrJun);
 
         // net income before interest on this year's new borrowing
-        const ebit = base[K.ebit] + dFuel + dFx + dRev;
+        const ebit = base[K.ebit] + dFuel + dFx + dRev + dExtra;
         const intOpen = rate * (st.STDebt + st.LTDebt);
-        const ni0 = base[K.ni] + (dFuel + dFx + dRev) - dInt - provision - intOpen + saving;
+        const ni0 = base[K.ni] + (dFuel + dFx + dRev) - dInt - provision - intOpen + saving + dExtra - intLate;
 
         // cash the SOE has to find this year (negative = surplus)
-        const need0 = -ni0 + dRecv + vat;
+        const need0 = -ni0 + dRecv + vat + dCust;
         let fund = 0, intNew = 0, repay = 0, left = 0, draw = 0, rebuilt = 0, support = 0;
-        let uIPP = 0, uFuel = 0, uDebt = 0, uOps = 0, rDraw = 0, topUp = 0;
-        let dueIPP = 0, dueFuel = 0, dueDebt = 0, dueOps = 0;
-        if (wfOn) {                                            // the year's bills by priority tier
-          const fuelBase = p.fuel_cost_share * st.OpEx;
-          dueIPP = ippShare * st.OpEx;
-          dueFuel = Math.max(0, fuelBase + inc);
-          dueDebt = Math.max(0, base[K.int] + dInt + intOpen - saving);
-          dueOps = Math.max(0, st.OpEx - dep - dueIPP - fuelBase);
+        const un = Object.fromEntries(TIER_KEYS.map((k) => [k, 0]));
+        let rDraw = 0, topUp = 0, statePay = 0, bills = null, target = 0;
+        if (wfOn) {                                            // the year's bills by tier
+          const own = Math.max(0, opex - dep - ippShare * opex - fuelBase - statShare * opex);
+          const junBill = junShare * own, soePart = own - junBill, floorBill = floorShare * soePart;
+          bills = {
+            ArrStat: tax0 + statShare * opex + rOth * st.ArrStat,
+            ArrIPP: ippShare * opex * (1 - disc) + rPri * st.ArrIPP,
+            ArrFuel: Math.max(0, fuelBase + inc) * (1 - disc) + rPri * st.ArrFuel,
+            ArrDebt: Math.max(0, base[K.int] + dInt + intOpen - saving) + rDbt * st.ArrDebt,
+            ArrFloor: floorBill + rOth * st.ArrFloor,
+            ArrOps: soePart - floorBill + rOth * st.ArrOps,
+            ArrJun: junBill + rOth * st.ArrJun,
+          };
+          target = (reserveMonths / 12) * (bills.ArrIPP + bills.ArrDebt);
         }
+        const rankList = [...new Set(Object.values(ranks))].sort((a, b) => a - b);
         if (need0 > 0) {
           if (cashLive) draw = Math.min(need0, Math.max(0, st.Cash - floor * st.OpEx)) * buf; // cash first, down to the floor
-          if (wfOn) {                                          // nothing borrowed: the shortfall is left unpaid from the bottom tier up
-            let g = need0 - draw;
-            uOps = Math.min(g, dueOps); g -= uOps;             // (5) own operations and other suppliers
-            rDraw = Math.min(g, st.Reserve); g -= rDraw;       // (4) the reserve protects the priority tiers
-            uDebt = Math.min(g, dueDebt); g -= uDebt;          // (3) debt service
-            uFuel = Math.min(g, dueFuel); g -= uFuel;          // (2) fuel
-            uIPP = Math.min(g, dueIPP); g -= uIPP;             // (1) IPPs, last
-            uOps += g;                                         // anything beyond the year's bills stays in the bottom tier
-          } else {
-            fund = (need0 - draw) / (1 - (kInt * rate) / 2);   // the rest borrowed, grossed up for half a year of interest
+          const gap = need0 - draw;
+          let gapB;
+          if (alpha > 0) {                                     // the routed share is not borrowed
+            let gapW = gap * alpha;
+            gapB = gap - gapW;
+            for (const rk of rankList.slice().reverse()) {     // lowest priority first
+              if (rk === ranks.reserve) { const d = Math.min(gapW, st.Reserve); rDraw += d; gapW -= d; } // the reserve protects the tiers at or above its rank
+              if (rule === "state") continue;
+              const grp = TIER_KEYS.filter((k) => ranks[TIER_RANK[k]] === rk);
+              const tot = grp.reduce((s, k) => s + bills[k], 0);
+              if (tot > 0 && gapW > 0) {
+                const u = Math.min(gapW, tot);
+                for (const k of grp) un[k] += u * (bills[k] / tot);
+                gapW -= u;
+              }
+            }
+            if (rule === "state") statePay = gapW;             // the State pays what the waterfall cannot
+            else un.ArrOps += gapW;                            // anything beyond the year's bills stays with the SOE's own operations
+          } else gapB = gap;
+          if (gapB > 0) {                                      // the rest is borrowed, grossed up for half a year of interest
+            fund = gapB / (1 - (kInt * rate) / 2);
             if (cap > 0) {                                     // borrowing stops at the debt-to-assets cap; the State injects the rest
               const taNew = st.TA + dRecv + vat + dArr - draw;
               const room = Math.max(0, cap * taNew - (st.TL - dReval));
-              if (fund > room) { fund = room; support = (need0 - draw) - fund * (1 - (kInt * rate) / 2); }
+              if (fund > room) { fund = room; support = gapB - fund * (1 - (kInt * rate) / 2); }
             }
             intNew = (rate * kInt * fund) / 2;
           }
         } else {                                               // surplus: arrears in priority order, then short-term debt
           let s = -need0;
           if (wfOn) {
-            for (const k of ["ArrIPP", "ArrFuel", "ArrDebt"]) { const r = Math.min(s, st[k]); st[k] -= r; s -= r; repay += r; } // priority creditors first
-            const target = (reserveMonths / 12) * (dueIPP + dueDebt);
-            topUp = Math.min(s, Math.max(0, target - st.Reserve)); s -= topUp;
-            const r = Math.min(s, st.ArrOps); st.ArrOps -= r; s -= r; repay += r;
+            for (const rk of rankList) {                       // highest priority first
+              const grp = TIER_KEYS.filter((k) => ranks[TIER_RANK[k]] === rk);
+              const tot = grp.reduce((a, k) => a + st[k], 0);
+              if (tot > 0 && s > 0) {
+                const r = Math.min(s, tot);
+                for (const k of grp) st[k] -= r * (st[k] / tot);
+                s -= r; repay += r;
+              }
+              if (rk === ranks.reserve && alpha > 0) { topUp = Math.min(s, Math.max(0, target - st.Reserve)); s -= topUp; } // then the reserve, at its rank
+            }
           }
           const rb = Math.min(s, st.STDebt); st.STDebt -= rb; s -= rb;
           const ra = Math.min(s, st.Payables); st.Payables -= ra; s -= ra;
           repay += rb + ra; left = s;
           if (cashLive) rebuilt = Math.min(left, st.CashDrawn); // rebuilds the cash drawn in earlier years, no further
         }
-        const wfUnpaid = uIPP + uFuel + uDebt + uOps;
+        const wfUnpaid = TIER_KEYS.reduce((a, k) => a + un[k], 0);
         const ni = ni0 - intNew;
         const fST = fund * stShare, fAP = fST * apShare, fBank = fST - fAP, fLT = fund - fST;
 
         st.STDebt += fBank; st.Payables += fAP; st.LTDebt += fLT;
-        st.Recv += dRecv; st.VAT += vat;
+        st.Recv += dRecv; st.VAT += vat; st.CustArrears += dCust;
         st.RE += ni;
-        st.Equity += ni + dReval + support;
-        st.Support += support;
-        st.ArrIPP += uIPP; st.ArrFuel += uFuel; st.ArrDebt += uDebt; st.ArrOps += uOps;
+        st.Equity += ni + dReval + support + statePay;
+        st.Support += support; st.StateShortfall += statePay;
+        for (const k of TIER_KEYS) st[k] += un[k];
         st.Reserve += topUp - rDraw;
         st.CL += fST + wfUnpaid - repay;
         st.TL += fund + wfUnpaid - repay - dReval;
-        st.CA += dRecv + vat + dArr;
-        st.TA += dRecv + vat + dArr + left + topUp - rDraw;
+        st.CA += dRecv + vat + dArr + dCust;
+        st.TA += dRecv + vat + dArr + left + topUp - rDraw + dCust;
         if (p.legacy_loss_assets && need0 > 0) st.TA += Math.min(0, ni); // optional: old rule, a borrowed loss also cuts total assets
         if (draw) { st.Cash -= draw; st.CashDrawn += draw; st.CA -= draw; st.TA -= draw; } // cash paid out
         if (rebuilt) { st.Cash += rebuilt; st.CashDrawn -= rebuilt; st.CA += rebuilt; }    // part of the surplus held as cash
         st.EBIT = ebit;
-        st.Interest = base[K.int] + dInt + intOpen + intNew - saving;
-        const rma = grantsKnown ? div(st.Revenue - grants + tariff + cust, st.Revenue + inc) : NaN; // customer share of the allowed revenue
-        out.push(snap(base, t, st, { inc, tariff, cust, comp, paidNow, unpaid, collected, provision, vat, fund, draw, fST, intNew: intOpen + intNew, ni, support, saving, rma, wfUnpaid, uOps, rDraw, topUp }));
+        st.Interest = base[K.int] + dInt + intOpen + intNew - saving + intLate;
+        const rma = grantsKnown ? div(custRev + tariff + cust, st.Revenue + inc) : NaN; // customer share of the allowed revenue
+        out.push(snap(base, t, st, { inc, tariff, cust, comp, paidNow, unpaid, collected, provision, vat, fund, draw, fST, intNew: intOpen + intNew, ni, support, saving, rma,
+          wfUnpaid, uOps: un.ArrOps + un.ArrFloor, rDraw, topUp, statePay, late: intLate, alpha, compGap, dCust }));
       }
       return out;
     }
-
+    // waterfall tiers: state key -> the WATERFALL_TIERS rank it takes ("residual" is split by the shortfall rule)
+    const TIER_KEYS = ["ArrStat", "ArrIPP", "ArrFuel", "ArrDebt", "ArrFloor", "ArrOps", "ArrJun"];
+    const TIER_RANK = { ArrStat: "statutory", ArrIPP: "ipp", ArrFuel: "fuel", ArrDebt: "debt", ArrFloor: "om_floor", ArrOps: "ops", ArrJun: "junior" };
+    /** shocks.waterfall_ranks */
+    function waterfallRanks(p) {
+      const key = p.waterfall_order ? String(p.waterfall_order) : "senelec_note";
+      const preset = CFG.WATERFALL_ORDERS[key] || CFG.WATERFALL_ORDERS.senelec_note;
+      let base;
+      if (!preset.ranks) {                                     // custom
+        const dflt = CFG.WATERFALL_ORDERS.senelec_note.ranks;
+        base = Object.fromEntries(CFG.WATERFALL_TIERS.map((k) => [k, isNum(p["rank_" + k]) ? p["rank_" + k] : dflt[k]]));
+      } else base = Object.assign({}, preset.ranks);
+      const rule = p.shortfall_rule ? String(p.shortfall_rule) : "soe", b = base.residual;
+      let ops, jun;
+      if (rule === "junior") { ops = b; jun = b + 0.5; } else if (rule === "pro_rata") { ops = jun = b; } else { ops = b + 0.5; jun = b; }
+      return { statutory: base.statutory, ipp: base.ipp, fuel: base.fuel, debt: base.debt, reserve: base.reserve, om_floor: base.om_floor, ops, junior: jun };
+    }
+    /** shocks.ramp_share: average share in force during year k after the start under a linear phase-in */
+    function rampShare(k, months) {
+      if (months <= 0) return 1;
+      const a = 12 * k, b = 12 * (k + 1);
+      if (a >= months) return 1;
+      const hi = Math.min(b, months);
+      return ((hi * hi - a * a) / (2 * months) + (b - hi)) / 12;
+    }
+    const RATING_ORDER = CFG.Z_RATING_TABLE.map((r) => r[2]);
+    const ratingAtLeast = (r, m) => RATING_ORDER.includes(r) && RATING_ORDER.includes(m) && RATING_ORDER.indexOf(r) <= RATING_ORDER.indexOf(m);
+    // the D band: its upper Z bound and PD anchor the logistic tail
+    const Z_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], PD_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][3];
+    const logistic = (x) => (isNum(x) ? 1 / (1 + Math.exp(-x)) : NaN);
+    /** shocks.pd_value */
+    function pdValue(z, rating, debtDefault, p) {
+      p = p || {};
+      if (debtDefault) return isNum(p.pd_on_default) ? p.pd_on_default : 1;
+      const method = p.pd_method ? String(p.pd_method) : "rating";
+      if (method === "user") return Math.min(1, Math.max(0, isNum(p.pd_user) ? p.pd_user : 0.1));
+      const b = isNum(p.pd_logit_b) ? p.pd_logit_b : -1.17;
+      if (method === "logistic") return isNum(z) ? logistic((isNum(p.pd_logit_a) ? p.pd_logit_a : -2.18) + b * z) : NaN;
+      if (method === "rating_tail" && isNum(z) && z < Z_D) return logistic(Math.log(PD_D / (1 - PD_D)) + b * (z - Z_D));
+      return pdByRating(rating);
+    }
+    /** shocks.cumulative_pd */
+    const cumulativePd = (pds) => 1 - pds.reduce((q, v) => q * (isNum(v) ? 1 - Math.min(1, Math.max(0, v)) : 1), 1);
     function snap(base, t, st, f) {
-      const z = zemFromValues(st.CA - st.CL, st.TA, st.RE, st.EBIT, st.Equity, st.TL);
-      const illiquid = st.IlliquidOpen + st.Recv + st.VAT;
+      const ca = st.CA - (1 - st.RecvCurrent) * st.Recv;      // part of the State receivable may be non-current
+      const z = zemFromValues(ca - st.CL, st.TA, st.RE, st.EBIT, st.Equity, st.TL);
+      const illiquid = st.IlliquidOpen + st.Recv + st.VAT + st.CustArrears; // customer arrears are slow to collect too
+      const dflt = !!(st.DefaultRule && st.ArrDebt > 0);      // debt service unpaid: rated D
       return {
         Entity: base.Entity, Sector: base.Sector, "Calendar Year": base.Year + t, "Projection Year": t,
         EBIT: st.EBIT, "Interest Expense": st.Interest, "Net Income": t === 0 ? base[K.ni] : f.ni,
         "Retained Earnings": st.RE, Equity: st.Equity,
-        "Total Liabilities": st.TL, "Total Assets": st.TA, "Current Assets": st.CA, "Current Liabilities": st.CL,
-        X1: z.X1, X2: z.X2, X3: z.X3, X4: z.X4, Z_EM: z.Z_EM, Zone: z.Zone, Rating: zRating(z.Z_EM),
+        "Total Liabilities": st.TL, "Total Assets": st.TA, "Current Assets": ca, "Current Liabilities": st.CL,
+        X1: z.X1, X2: z.X2, X3: z.X3, X4: z.X4, Z_EM: z.Z_EM, Zone: z.Zone, Rating: dflt ? "D" : zRating(z.Z_EM), "Debt Default": dflt ? 1 : 0,
         // same meaning as before: the government's recognised share (Case C)
         "Direct Fuel Subsidy": f.comp || 0,
         // new flows
@@ -366,7 +484,12 @@
         "Interest on New Debt": f.intNew || 0,
         "Interest Saved": f.saving || 0,                    // refinancing: short-term debt at the long-term rate
         "Unpaid Under Waterfall": f.wfUnpaid || 0,          // the year's shortfall left unpaid, all tiers
-        "Underfunded Operations": f.uOps || 0,              // of which the bottom tier: the SOE's own operations and other suppliers
+        "Underfunded Operations": f.uOps || 0,              // of which the SOE's own operations (floor and above)
+        "State Shortfall Payment": f.statePay || 0,         // the State pays the waterfall's shortfall (shortfall rule "state")
+        "Late-payment Interest": f.late || 0,               // interest on arrears outstanding at the start of the year
+        "Waterfall Routed Share": f.alpha || 0,             // share of the year's cash routed through the waterfall
+        "Tariff Gap Compensation Change": f.compGap || 0,   // change in State compensation from the cost-recovery ratio
+        "Customer Arrears Change": f.dCust || 0,
         "Reserve Draw": f.rDraw || 0,
         "Reserve Top-up": f.topUp || 0,
         "Emergency Support": f.support || 0,                // government injection above the borrowing cap
@@ -382,19 +505,24 @@
         "Arrears to IPPs": st.ArrIPP,                       // cash waterfall: unpaid bills by priority tier
         "Arrears to Fuel Suppliers": st.ArrFuel,
         "Missed Debt Service": st.ArrDebt,
-        "Arrears on Own Operations": st.ArrOps,
+        "Arrears on Own Operations": st.ArrOps,               // above the O&M floor
+        "Arrears on O&M Floor": st.ArrFloor,
+        "Arrears to Junior Creditors": st.ArrJun,
+        "Arrears to Statutory and Operator": st.ArrStat,
+        "Customer Arrears": st.CustArrears,
+        "Cumulative State Shortfall Payment": st.StateShortfall,
         "Reserve Account": st.Reserve,
         "Cumulative Emergency Support": st.Support,
         // liquidity and solvency
-        "Current Ratio": div(st.CA, st.CL),
-        "Adjusted Current Ratio": div(st.CA - illiquid, st.CL), // excludes State receivables and trapped VAT
+        "Current Ratio": div(ca, st.CL),
+        "Adjusted Current Ratio": div(st.CA - illiquid, st.CL), // excludes State receivables, trapped VAT and customer arrears
         "Debt to Assets": div(st.TL, st.TA),
       };
     }
     /** adds PD, EAD (share × total liabilities), LGD, EFC (and EFC/GDP when a GDP path is given) to a scenario path */
-    function costPath(path, lgdPct, gdpSeries, eadShare = 1) {
+    function costPath(path, lgdPct, gdpSeries, eadShare = 1, p = null) {
       return path.map((r, i) => {
-        const pd = pdByRating(r.Rating), ead = r["Total Liabilities"] * eadShare, efc = pd * ead * (lgdPct / 100);
+        const pd = pdValue(r.Z_EM, r.Rating, r["Debt Default"] > 0, p), ead = r["Total Liabilities"] * eadShare, efc = pd * ead * (lgdPct / 100);
         return Object.assign({}, r, { PD: pd, EAD: ead, LGD: lgdPct / 100, EFC: efc, GDP: gdpSeries ? gdpSeries[i] : NaN, EFC_GDP: gdpSeries ? efc / gdpSeries[i] : NaN });
       });
     }
@@ -423,14 +551,30 @@
       if (p.fuel_subsidy_share && fuelOn) parts.push(`gov. absorbs ${Math.round(p.fuel_subsidy_share * 100)}% of fuel cost change`);
       if (p.fuel_subsidy_share && fuelOn && (p.comp_paid_share ?? 1) < 1) parts.push(`${Math.round((p.comp_paid_share ?? 1) * 100)}% paid in-year`);
       const pol = [];                                          // financing policies in force (not shocks)
-      if ((isNum(p.waterfall_on) ? p.waterfall_on : 0) > 0 && !p.legacy_loss_assets) pol.push("cash waterfall");
+      if ((isNum(p.waterfall_on) ? p.waterfall_on : 0) > 0 && !p.legacy_loss_assets) {
+        const order = CFG.WATERFALL_ORDERS[p.waterfall_order ? String(p.waterfall_order) : "senelec_note"] || CFG.WATERFALL_ORDERS.senelec_note;
+        const c01 = (v, d) => Math.min(1, Math.max(0, isNum(v) ? v : d));
+        const extra = [order.short], share = c01(p.waterfall_coverage, 1) * c01(p.waterfall_compliance, 1);
+        if (share < 1) extra.push(`${(share * 100).toFixed(0)}% of cash routed`);
+        if ((p.shortfall_rule ? String(p.shortfall_rule) : "soe") === "state") extra.push("State covers the shortfall");
+        pol.push("cash waterfall (" + extra.join(", ") + ")");
+      }
+      const crr = isNum(p.cost_recovery_ratio) ? p.cost_recovery_ratio : 0;
+      if (crr > 0) pol.push(`cost recovery ${(crr * 100).toFixed(0)}%`);
       const refiSh = isNum(p.refinance_share) ? p.refinance_share : 0;
       if (refiSh > 0 && !p.legacy_loss_assets) pol.push(`${(refiSh * 100).toFixed(0)}% of short-term debt refinanced`);
       const cap = isNum(p.borrowing_cap_debt_to_assets) ? p.borrowing_cap_debt_to_assets : 0;
       if (cap > 0) pol.push(`borrowing cap ${cap.toFixed(2)} debt/assets`);
+      const pdm = p.pd_method ? String(p.pd_method) : "rating";
+      if (pdm !== "rating") pol.push({ rating_tail: "PD: rating bands with a logistic tail", logistic: "PD: logistic in Z-EM", user: "PD: user-specified" }[pdm] || "PD: " + pdm);
       const sfx = pol.length ? " · " + pol.join(", ") : "";
       if (!parts.length) return "No shock applied (baseline)" + sfx;
       return parts.join(", ") + (p.shock_duration_years && stepOn ? ` — active ${p.shock_duration_years}yr` : "") + sfx;
+    }
+    // Seeded uniform generator (mulberry32)
+    function uniformRng(seed) {
+      let a = seed >>> 0;
+      return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
     }
     // Seeded generator (mulberry32) + Box–Muller, so identical settings reproduce identical draws.
     function rng(seed) {
@@ -499,6 +643,8 @@
       let sigma = p.revenue_sigma ?? null;
       if (sigma === null && p.revenue_shock_std_devs) sigma = (p.revenue_shock_pct || 0) / p.revenue_shock_std_devs;
       if (names.includes("revenue") && sigma === null) throw new Error("revenue_sigma is needed to draw revenue shocks");
+      const drawDefaults = (isNum(p.mc_default_draws) ? p.mc_default_draws : 1) > 0;
+      const uDef = uniformRng((o.seed ?? 42) + 1);              // separate stream: the shock draws are unchanged
       for (let i = 0; i < n; i++) {
         const d = Object.fromEntries(names.map((nm, k) => [nm, 0])), v = draw();
         names.forEach((nm, k) => { d[nm] = v[k]; });
@@ -506,10 +652,35 @@
         if (fp) sp.fuel_shock_path = peak ? fp.map((v) => d.fuel * (v / peak)) : fp.slice();
         if ("rate" in d) sp.rate_shock_bps = d.rate;
         if ("revenue" in d) { sp.revenue_shock_std_devs = d.revenue; sp.revenue_shock_pct = d.revenue * sigma; }
-        sims.push({ fuel: d.fuel, fx: d.fx, draw: d, path: costPath(runScenario(base, sp, H), o.lgd, o.gdp || null, o.eadShare ?? 1) });
+        const path = costPath(runScenario(base, sp, H), o.lgd, o.gdp || null, o.eadShare ?? 1, p);
+        // materialisation: the path defaults in the first year a draw falls below that year's PD, or debt service goes unpaid
+        let dYear = 0, cost = 0;
+        const u = Array.from({ length: Math.max(1, H) }, () => uDef());
+        if (drawDefaults) {
+          for (let t = 1; t < path.length; t++) {
+            const r = path[t];
+            if (r["Debt Default"] > 0 || (isNum(r.PD) && u[t - 1] < r.PD)) { dYear = r["Projection Year"]; cost = r.EAD * r.LGD; break; }
+          }
+        }
+        path.forEach((r) => { r["Default Year"] = dYear; r["Realised Cost"] = dYear && r["Projection Year"] === dYear ? cost : 0; });
+        sims.push({ fuel: d.fuel, fx: d.fx, draw: d, path, defaultYear: dYear, realisedCost: cost,
+          realisedCostGdp: dYear && o.gdp ? cost / o.gdp[dYear] : 0 });
       }
       sims.names = names;
       return sims;
+    }
+    /** shocks.mc_default_summary: share of simulations that default within the horizon, by year, and the realised cost */
+    function mcDefaultSummary(sims, gdp) {
+      const n = sims.length, by = {};
+      sims.forEach((s) => { if (s.defaultYear > 0) by[s.defaultYear] = (by[s.defaultYear] || 0) + 1 / n; });
+      const c = sims.map((s) => s.realisedCost);
+      const out = { p_default: sims.filter((s) => s.defaultYear > 0).length / n, by_year: by,
+        cost_mean: c.reduce((a, v) => a + v, 0) / n, cost_p95: quantile(c, 0.95), cost_p99: quantile(c, 0.99) };
+      if (gdp) {
+        const g = sims.map((s) => s.realisedCostGdp);
+        Object.assign(out, { cost_gdp_mean: g.reduce((a, v) => a + v, 0) / n, cost_gdp_p95: quantile(g, 0.95), cost_gdp_p99: quantile(g, 0.99) });
+      }
+      return out;
     }
     /** pandas/numpy default (linear) quantile */
     function quantile(values, q) {
@@ -789,7 +960,7 @@
     return {
       isNum, div, classifyZone, zRating, enrich, enrichRow, availableKpis, classify, pdByRating, worstPdInZone, efcRow,
       recoveryScenarios, revenueVolatility, ratingIndex, notchChange, latestPerEntity, runScenario, costPath, kpiImpact,
-      gdpPath, describeShocks, monteCarlo, quantile, percentilePath, singleNarrative, crossNarrative, zTrendSummary,
+      gdpPath, describeShocks, monteCarlo, mcDefaultSummary, pdValue, cumulativePd, waterfallRanks, rampShare, ratingAtLeast, quantile, percentilePath, singleNarrative, crossNarrative, zTrendSummary,
       zoneSummary, gre, ZCOMP, K, soeExposures, symEig, mcFactor, MC_VARIABLES, normalizeLabel, seqRatio, matchColumn,
       standardizeColumns, BY_COLUMN, findHeaderRow, parseNumber, parseYear, detectDelimiter, parseDelimited, frameFromRows,
     };

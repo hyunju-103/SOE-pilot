@@ -31,7 +31,7 @@ with st.expander("What do these shocks mean?"):
     rows = "".join(
         f"<tr><td style='font-weight:700;white-space:nowrap;'>{term}</td><td>{config.GLOSSARY[term]}</td></tr>"
         for term in ["Fuel shock", "Tariff pass-through", "Tariff increase", "State compensation", "State compensation receivable",
-                     "Cash funding gap", "Adjusted current ratio", "Cash waterfall", "Underfunded operations", "Refinancing", "Emergency support", "RMA coverage", "FX shock", "Interest rate shock",
+                     "Cash funding gap", "Adjusted current ratio", "Cash waterfall", "Shortfall rule", "Underfunded operations", "Cost-recovery ratio", "Refinancing", "Emergency support", "Logistic PD", "RMA coverage", "FX shock", "Interest rate shock",
                      "Revenue shock", "Refinancing shock", "Government arrears", "Monte Carlo simulation", "Fiscal-at-risk"]
     )
     st.markdown(f"<table class='sfp-table sfp-table-wrap'><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
@@ -207,12 +207,13 @@ with t5:
         st.caption(_src_or_preset("cash_floor_opex_share"))
 
     st.markdown(
-        f'<p class="sfp-hint"><b>Cash waterfall (priority of payments).</b> {config.GLOSSARY["Cash waterfall"]} In the model: order 1 IPPs · '
-        '2 fuel · 3 debt service · 4 reserve · 5 own operations and other suppliers; nothing is borrowed while it is on, and a shortfall is left '
-        'unpaid from tier 5 upwards (the borrowing split, rate and cap above do not apply). <b>Refinancing</b> is a separate assumption: the chosen '
-        'share of short-term bank debt moves to long-term loans in the first projection year. <b>Emergency support.</b> With a borrowing cap (and the '
-        'waterfall off), new borrowing stops where total liabilities would pass that share of total assets, and the government injects the rest as '
-        'equity — a direct budget cost.</p>',
+        f'<p class="sfp-hint"><b>Cash waterfall (priority of payments).</b> {config.GLOSSARY["Cash waterfall"]} In the model: the routed share of '
+        'the cash (coverage × compliance × ramp-up) is paid in the country order chosen below — taxes and the operator fee, IPPs and fuel, '
+        'debt service and a reserve, the O&M floor, then the SOE\'s other costs and junior creditors; tiers with the same rank share pro rata. '
+        'The routed shortfall is not borrowed but left unpaid from the lowest rank up (or paid by the State), and carries late-payment interest. '
+        '<b>Refinancing</b> is a separate assumption: the chosen share of short-term bank debt moves to long-term loans in the start year, or later '
+        'once the rating reaches the minimum. <b>Emergency support.</b> With a borrowing cap, new borrowing stops where total liabilities would pass '
+        'that share of total assets, and the government injects the rest as equity — a direct budget cost.</p>',
         unsafe_allow_html=True,
     )
     w1, w2 = st.columns(2)
@@ -226,8 +227,8 @@ with t5:
                                    disabled=not waterfall_on,
                                    help="Topped up from surpluses after the priority arrears; drawn before IPPs, fuel or debt service go unpaid. Held outside current assets.")
         borrowing_cap_debt_to_assets = st.slider("Borrowing cap before emergency support (debt / assets; 0 = off)", 0.0, 1.5,
-                                                 _start("borrowing_cap_debt_to_assets"), 0.05, disabled=waterfall_on,
-                                                 help=config.GLOSSARY["Emergency support"] + " Not used under the cash waterfall, which borrows nothing.")
+                                                 _start("borrowing_cap_debt_to_assets"), 0.05,
+                                                 help=config.GLOSSARY["Emergency support"] + " Under the cash waterfall it applies only to the cash outside it.")
     with w2:
         refinance_share = st.slider("Short-term bank debt refinanced (separate assumption)", 0.0, 1.0, _start("refinance_share"), 0.05,
                                     help=config.GLOSSARY["Refinancing"] + " 0% = off.")
@@ -241,6 +242,64 @@ with t5:
         refinance_long_term_rate = st.slider("Long-term rate on refinanced debt (%)", 0.0, 20.0, _start("refinance_long_term_rate") * 100, 0.5,
                                              disabled=refinance_share <= 0,
                                              help="Rate on the long-term loans that replace the overdrafts (placeholder; set from the refinancing terms).") / 100.0
+        refinance_start_year = st.slider("First year of refinancing (projection year)", 1, 7, int(_start("refinance_start_year")), 1, disabled=refinance_share <= 0,
+                                         help="Lender response: refinancing takes a year or more. It happens in this year or later, in the first year whose previous-year rating meets the minimum.")
+        _ratings = [r[2] for r in config.Z_RATING_TABLE]
+        refinance_min_rating = st.selectbox("Minimum rating for refinancing", [""] + _ratings, index=0, disabled=refinance_share <= 0,
+                                            format_func=lambda r: "None" if not r else f"{r} or better")
+
+    with st.expander("Waterfall design: country order, shortfall rule, floor, adoption, late interest, behaviour", expanded=bool(waterfall_on)):
+        _orders = config.WATERFALL_ORDERS
+        o1, o2 = st.columns(2)
+        with o1:
+            waterfall_order = st.selectbox("Order of payment (country)", list(_orders), format_func=lambda k: _orders[k]["label"], disabled=not waterfall_on)
+            st.caption(_orders[waterfall_order]["evidence"])
+            _rules = {"soe": "The SOE (own costs above the floor first)", "junior": "Junior creditors first", "pro_rata": "The SOE and junior creditors pro rata", "state": "The State pays it"}
+            _r0 = _orders[waterfall_order]["rule"] or "soe"
+            shortfall_rule = st.selectbox("Who absorbs a shortfall", list(_rules), index=list(_rules).index(_r0), format_func=_rules.get, disabled=not waterfall_on)
+            _ranks = {}
+            if waterfall_order == "custom":
+                rc = st.columns(4)
+                for i, t in enumerate(config.WATERFALL_TIERS):
+                    with rc[i % 4]:
+                        _ranks["rank_" + t] = float(st.number_input(f"Rank: {t.replace('_', ' ')}", 0, 6, int(_orders["senelec_note"]["ranks"][t]), 1))
+            statutory_cost_share = st.slider("Taxes, levies and operator fee (share of OpEx)", 0.0, 0.3, _start("statutory_cost_share"), 0.01, disabled=not waterfall_on,
+                                             help="Rank 0: statutory charges and the operator's or collection agent's fee; the reported tax expense is added.")
+            om_floor_share = st.slider("O&M floor: protected share of own costs", 0.0, 1.0, _start("om_floor_share"), 0.05, disabled=not waterfall_on,
+                                       help="0% = the SOE's own costs can be squeezed to zero.")
+            junior_share = st.slider("Other suppliers, regulators, capex (share of own costs)", 0.0, 1.0, _start("junior_share"), 0.05, disabled=not waterfall_on)
+        with o2:
+            waterfall_coverage = st.slider("Coverage: collections paid into the account", 0.0, 1.0, _start("waterfall_coverage"), 0.05, disabled=not waterfall_on)
+            waterfall_compliance = st.slider("Compliance: share actually routed", 0.0, 1.0, _start("waterfall_compliance"), 0.05, disabled=not waterfall_on,
+                                             help="The review suggests testing 60% to 100%.")
+            waterfall_start_year = st.slider("Start year (projection year)", 1, 7, int(_start("waterfall_start_year")), 1, disabled=not waterfall_on)
+            waterfall_rampup_months = st.slider("Ramp-up (months)", 0, 36, int(_start("waterfall_rampup_months")), 6, disabled=not waterfall_on)
+            late_rate_priority = st.slider("Late-payment interest: IPPs and fuel (%)", 0.0, 20.0, _start("late_rate_priority") * 100, 0.5, disabled=not waterfall_on) / 100.0
+            late_rate_debt = st.slider("Default interest: missed debt service (%)", 0.0, 25.0, _start("late_rate_debt") * 100, 0.5, disabled=not waterfall_on) / 100.0
+            late_rate_other = st.slider("Late-payment interest: other tiers (%)", 0.0, 20.0, _start("late_rate_other") * 100, 0.5, disabled=not waterfall_on) / 100.0
+            default_on_missed_debt = st.toggle("Missed debt service counts as default (rated D)", value=bool(_start("default_on_missed_debt")), disabled=not waterfall_on)
+            priority_discount = st.slider("Supplier response: price cut for priority (%)", 0.0, 10.0, _start("priority_discount") * 100, 0.5, disabled=not waterfall_on) / 100.0
+            state_paid_uplift = st.slider("State response: extra compensation paid in-year", 0.0, 1.0, _start("state_paid_uplift"), 0.05, disabled=not waterfall_on)
+
+    with st.expander("Tariffs & collections: cost-recovery ratio, State receivable, collection rates, demand and losses"):
+        b1, b2 = st.columns(2)
+        _g0 = float(base_row.get("Government Grants")) if ov.ok(base_row.get("Government Grants")) else 0.0
+        _crr0 = (float(base_row["Revenues"]) - _g0) / (float(base_row["Operating Expense"]) + float(base_row["Interest Expense"]))
+        with b1:
+            cost_recovery_ratio = st.slider("Cost-recovery ratio (0 = as in the data)", 0.0, 1.2, _start("cost_recovery_ratio"), 0.01,
+                                            help=f"Average tariff / full cost (operating expense plus interest). In the data: {_crr0:.1%}. The review suggests 85% to 110%.")
+            tariff_gap_state_share = st.slider("State share of the tariff gap", 0.0, 1.0, _start("tariff_gap_state_share"), 0.05)
+            receivable_current_share = st.slider("State receivable counted in current assets (X1)", 0.0, 1.0, _start("receivable_current_share"), 0.05)
+            demand_growth = st.slider("Demand growth (%/yr)", -5.0, 10.0, _start("demand_growth") * 100, 0.5) / 100.0
+            losses_change = st.slider("Rise in network losses (% of sales)", 0.0, 10.0, _start("losses_change") * 100, 0.5) / 100.0
+        with b2:
+            share_households = st.slider("Households: share of sales", 0.0, 1.0, _start("share_households"), 0.05)
+            collect_households = st.slider("Households: collected", 0.0, 1.0, _start("collect_households"), 0.01)
+            share_large_private = st.slider("Large private customers: share", 0.0, 1.0, _start("share_large_private"), 0.05)
+            collect_large_private = st.slider("Large private: collected", 0.0, 1.0, _start("collect_large_private"), 0.01)
+            share_public = st.slider("Public administrations: share", 0.0, 1.0, _start("share_public"), 0.05)
+            collect_public = st.slider("Public administrations: collected", 0.0, 1.0, _start("collect_public"), 0.01)
+            customer_arrears_collected = st.slider("Customer arrears collected the next year", 0.0, 1.0, _start("customer_arrears_collected"), 0.05)
 
 with t2:
     c1, c2 = st.columns(2)
@@ -314,6 +373,19 @@ params = {
     "waterfall_on": 1.0 if waterfall_on else 0.0, "ipp_cost_share": ipp_cost_share, "reserve_months": float(reserve_months),
     "refinance_share": refinance_share, "short_term_debt_rate": short_term_debt_rate, "refinance_long_term_rate": refinance_long_term_rate,
     "borrowing_cap_debt_to_assets": borrowing_cap_debt_to_assets,
+    "refinance_start_year": float(refinance_start_year), "refinance_min_rating": refinance_min_rating,
+    # waterfall design (country order, shortfall rule, floor, adoption, late interest, behaviour)
+    "waterfall_order": waterfall_order, "shortfall_rule": shortfall_rule, **_ranks,
+    "statutory_cost_share": statutory_cost_share, "om_floor_share": om_floor_share, "junior_share": junior_share,
+    "waterfall_coverage": waterfall_coverage, "waterfall_compliance": waterfall_compliance,
+    "waterfall_start_year": float(waterfall_start_year), "waterfall_rampup_months": float(waterfall_rampup_months),
+    "late_rate_priority": late_rate_priority, "late_rate_debt": late_rate_debt, "late_rate_other": late_rate_other,
+    "default_on_missed_debt": 1.0 if default_on_missed_debt else 0.0, "priority_discount": priority_discount, "state_paid_uplift": state_paid_uplift,
+    # tariffs and collections
+    "cost_recovery_ratio": cost_recovery_ratio, "tariff_gap_state_share": tariff_gap_state_share, "receivable_current_share": receivable_current_share,
+    "share_households": share_households, "collect_households": collect_households, "share_large_private": share_large_private,
+    "collect_large_private": collect_large_private, "share_public": share_public, "collect_public": collect_public,
+    "customer_arrears_collected": customer_arrears_collected, "demand_growth": demand_growth, "losses_change": losses_change,
 }
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -337,17 +409,25 @@ with gc2:
     )
 with gc3:
     gdp_growth = st.slider("Assumed nominal GDP growth (%/yr)", -5.0, 15.0, config.DEFAULT_GDP_GROWTH * 100, 0.5) / 100.0
+_pdm = {"rating": "Rating bands (at most 40%)", "rating_tail": "Rating bands with a logistic tail (above 40%)", "logistic": "Logistic in Z-EM", "user": "User-specified"}
+pc1, pc2, pc3 = st.columns(3)
+with pc1:
+    pd_method = st.selectbox("Probability of default (PD)", list(_pdm), format_func=_pdm.get,
+                             help="Rating bands stop at 40% (rating D). The logistic tail keeps PD rising below the D threshold; logistic applies 1/(1+e^−(a+bZ)) to every Z; user = one PD for every year.")
+with pc2:
+    pd_logit_b = st.slider("Logistic slope b", -3.0, -0.2, float(config.DEFAULT_CASH_SETTINGS["pd_logit_b"]), 0.01, disabled=pd_method not in ("rating_tail", "logistic"))
+    pd_logit_a = st.slider("Logistic intercept a", -5.0, 1.0, float(config.DEFAULT_CASH_SETTINGS["pd_logit_a"]), 0.01, disabled=pd_method != "logistic")
+with pc3:
+    pd_user = st.slider("User PD (every year)", 0.0, 1.0, float(config.DEFAULT_CASH_SETTINGS["pd_user"]), 0.01, disabled=pd_method != "user")
+    pd_on_default = st.select_slider("PD in a year with debt service missed", options=[0.4, 1.0], value=1.0, format_func=lambda v: f"{v:.0%}")
+params.update(pd_method=pd_method, pd_logit_a=pd_logit_a, pd_logit_b=pd_logit_b, pd_user=pd_user, pd_on_default=pd_on_default)
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ===========================================================================
 # SINGLE SCENARIO VIEW
 # ===========================================================================
 if view_mode == "Single scenario":
-    scenario = shocks.run_scenario(base_row, params, horizon_years)
-    scenario["PD"] = scenario["Rating"].apply(calculations.compute_pd_from_rating)
-    scenario["EAD"] = scenario["Total Liabilities"] * ead_share
-    scenario["LGD"] = lgd_pct / 100.0
-    scenario["EFC"] = scenario["PD"] * scenario["EAD"] * scenario["LGD"]
+    scenario = shocks.add_cost(shocks.run_scenario(base_row, params, horizon_years), lgd_pct, ead_share, params)
     scenario["GDP"] = shocks.gdp_path(base_gdp, gdp_growth, horizon_years) if base_gdp else float("nan")
     scenario["EFC_pct_GDP"] = scenario["EFC"] / scenario["GDP"] if base_gdp else float("nan")
 
@@ -356,9 +436,7 @@ if view_mode == "Single scenario":
 
     # the same scenario with no shock, for the comparisons in the key figures
     _zero = dict(params, **{k: 0.0 for k in ov.MAGNITUDES}, revenue_shock_pct=0.0)
-    _nos = shocks.run_scenario(base_row, _zero, horizon_years)
-    _nos["PD"] = _nos["Rating"].apply(calculations.compute_pd_from_rating)
-    _nos["EFC"] = _nos["PD"] * _nos["Total Liabilities"] * ead_share * lgd_pct / 100.0
+    _nos = shocks.add_cost(shocks.run_scenario(base_row, _zero, horizon_years), lgd_pct, ead_share, _zero)
     _fb = _nos.iloc[-1]
     migrated = base["Zone"] != final["Zone"]
     efc_gdp_final = final["EFC_pct_GDP"]
@@ -403,16 +481,15 @@ if view_mode == "Single scenario":
     cash_drawn = yrs["Cash Drawdown"].sum()
     cash_live = _has_cash and cash_buffer_share > 0 and not params["legacy_loss_assets"]  # cash-first is in play
     wf_live = waterfall_on and not params["legacy_loss_assets"]
-    cap_on = borrowing_cap_debt_to_assets > 0 and not wf_live
+    cap_on = borrowing_cap_debt_to_assets > 0
     refi_on = final["Refinanced Debt"] > 0
     res_on = wf_live and reserve_months > 0
-    _arr_cols = ["Arrears to IPPs", "Arrears to Fuel Suppliers", "Missed Debt Service"]
+    _arr_cols = ["Arrears to Statutory and Operator", "Arrears to IPPs", "Arrears to Fuel Suppliers", "Missed Debt Service"]
     _prio = scenario[_arr_cols].sum(axis=1)
-    _arr = _prio + scenario["Arrears on Own Operations"]
+    _arr = _prio + scenario["Arrears on Own Operations"] + scenario["Arrears on O&M Floor"] + scenario["Arrears to Junior Creditors"]
+    _dft = scenario[scenario["Debt Default"] > 0]
     if wf_live:  # the same scenario without the reform, for the comparison
-        _nowf = shocks.run_scenario(base_row, dict(params, waterfall_on=0.0), horizon_years)
-        _nowf["PD"] = _nowf["Rating"].apply(calculations.compute_pd_from_rating)
-        _nowf["EFC"] = _nowf["PD"] * _nowf["Total Liabilities"] * ead_share * lgd_pct / 100.0
+        _nowf = shocks.add_cost(shocks.run_scenario(base_row, dict(params, waterfall_on=0.0), horizon_years), lgd_pct, ead_share, dict(params, waterfall_on=0.0))
         _nowf["EFC_pct_GDP"] = _nowf["EFC"] / scenario["GDP"] if base_gdp else float("nan")
     _rma = yrs[(yrs["Fuel Cost Change"] != 0) & yrs["Tariff Share of RMA"].notna()]
     rma_low = _rma.loc[_rma["Tariff Share of RMA"].idxmin()] if len(_rma) else None
@@ -438,7 +515,7 @@ if view_mode == "Single scenario":
                        + (f" · floor {ov.money(cash_floor_opex_share * base_row['Operating Expense'], _scale)}" if cash_floor_opex_share else ""),
                        status="watch" if cash_drawn > 0 else "ok", status_text="▲ Used" if cash_drawn > 0 else "● None") if cash_live else None,
             theme.tile("Left unpaid under the waterfall", ov.money(yrs["Unpaid Under Waterfall"].sum(), _scale), _cur,
-                       ("shortfall after the cash drawn · " if cash_live else "") + f"nothing borrowed · peak arrears {ov.money(_arr.max(), _scale)} "
+                       ("shortfall after the cash drawn · " if cash_live else "") + f"routed share not borrowed · peak arrears {ov.money(_arr.max(), _scale)} "
                        f"in {int(scenario.loc[_arr.idxmax(), 'Calendar Year'])}",
                        status="alert" if yrs["Unpaid Under Waterfall"].sum() > 0 else "ok",
                        status_text="■ Arrears" if yrs["Unpaid Under Waterfall"].sum() > 0 else "● None") if wf_live else
@@ -447,7 +524,7 @@ if view_mode == "Single scenario":
                        f"interest {ov.money(yrs['Interest on New Debt'].sum(), _scale)}",
                        status="watch" if funding_gap > 0 else "ok", status_text="▲ Borrowed" if funding_gap > 0 else "● None"),
             theme.tile("SOE's own operations underfunded", ov.money(yrs["Underfunded Operations"].sum(), _scale), _cur,
-                       "tier 5, left unpaid so that IPPs, fuel and lenders are paid first · the waterfall creates no cash: closing this takes tariffs or State payments",
+                       "its own costs, left unpaid so that the ranks above are paid · the waterfall creates no cash: closing this takes tariffs or State payments",
                        status="alert" if yrs["Underfunded Operations"].sum() > 0 else "ok",
                        status_text="■ Underfunded" if yrs["Underfunded Operations"].sum() > 0 else "● Funded") if wf_live else None,
             theme.tile("Priority creditors unpaid", ov.money(_prio.max(), _scale), _cur,
@@ -456,12 +533,20 @@ if view_mode == "Single scenario":
                         f"{ov.money(scenario.loc[_prio.idxmax(), 'Missed Debt Service'], _scale)}") if _prio.max() > 0
                        else "IPPs, fuel and debt service paid in full every year",
                        status="alert" if _prio.max() > 0 else "ok", status_text="■ Arrears" if _prio.max() > 0 else "● Paid in full") if wf_live else None,
+            theme.tile("State pays the waterfall's shortfall", ov.money(final["Cumulative State Shortfall Payment"], _scale), _cur,
+                       "a budget transfer into equity · a direct fiscal cost on top of EFC", status="alert" if final["Cumulative State Shortfall Payment"] > 0 else "ok",
+                       status_text="■ Budget cost" if final["Cumulative State Shortfall Payment"] > 0 else "● None") if wf_live and shortfall_rule == "state" else None,
+            theme.tile("Debt service missed", str(int(_dft["Calendar Year"].iloc[0])) if len(_dft) else "None", "",
+                       f"rated D from {int(_dft['Calendar Year'].iloc[0])} · PD {_dft['PD'].iloc[0]:.0%}" if len(_dft) else "debt service paid in full every year",
+                       status="alert" if len(_dft) else "ok", status_text="■ Default" if len(_dft) else "● Paid") if wf_live and default_on_missed_debt else None,
+            theme.tile("Customer arrears", ov.money(final["Customer Arrears"], _scale), _cur, f"unpaid customer bills at the end of {_yr}",
+                       status="watch") if final["Customer Arrears"] else None,
             theme.tile("Reserve account", ov.money(final["Reserve Account"], _scale), _cur,
                        f"target {reserve_months} months of IPP payments and debt service · drawn {ov.money(yrs['Reserve Draw'].sum(), _scale)} over the horizon",
                        status="watch" if yrs["Reserve Draw"].sum() > 0 else "ok",
                        status_text="▲ Drawn" if yrs["Reserve Draw"].sum() > 0 else "● Held") if res_on else None,
             theme.tile("Current ratio", f"{final['Current Ratio']:.2f}", "",
-                       f"from {base['Current Ratio']:.2f} · adjusted for illiquid State and VAT claims: {final['Adjusted Current Ratio']:.2f}",
+                       f"from {base['Current Ratio']:.2f} · adjusted for illiquid State, VAT and customer claims: {final['Adjusted Current Ratio']:.2f}",
                        status="watch" if final["Current Ratio"] < base["Current Ratio"] else None),
             theme.tile("Debt to assets", f"{final['Debt to Assets']:.2f}", "", f"no shock {_fb['Debt to Assets']:.2f}"
                        + (f" · cap {borrowing_cap_debt_to_assets:.2f}" if cap_on else ""),
@@ -529,18 +614,24 @@ if view_mode == "Single scenario":
                                            "Customers' share of RMA": "{:.1%}"}),
                      use_container_width=True, hide_index=True)
         if wf_live:
-            st.markdown('<p class="sfp-hint"><b>Cash waterfall: who is left unpaid (end of year).</b> Tiers are paid in order; a shortfall is left '
-                        'unpaid from tier 5 upwards (the reserve is drawn before tiers 1–3), and a later surplus pays arrears from tier 1 down, then tops '
-                        'up the reserve. Arrears are current liabilities without interest.</p>', unsafe_allow_html=True)
-            arr_df = pd.DataFrame({"Year": scenario["Calendar Year"].astype(int), "1 IPPs": scenario["Arrears to IPPs"],
-                                   "2 Fuel": scenario["Arrears to Fuel Suppliers"], "3 Debt service": scenario["Missed Debt Service"],
-                                   **({"4 Reserve held": scenario["Reserve Account"]} if res_on else {}),
-                                   "5 Own operations": scenario["Arrears on Own Operations"], "Total arrears": _arr})
+            _rk = shocks.waterfall_ranks(params)
+            st.markdown(f'<p class="sfp-hint"><b>Cash waterfall: who is left unpaid (end of year).</b> Order: {config.WATERFALL_ORDERS[waterfall_order]["label"]} '
+                        '(rank in brackets; the same rank is pari passu). A shortfall on the routed cash is left unpaid from the lowest rank up (the reserve '
+                        'is drawn before the ranks above it), and a later surplus pays arrears from the top rank down, then tops up the reserve. Arrears are '
+                        'current liabilities and carry the late-payment interest set above.</p>', unsafe_allow_html=True)
+            _tc = [("statutory", "Arrears to Statutory and Operator", "Taxes, operator"), ("ipp", "Arrears to IPPs", "IPPs"), ("fuel", "Arrears to Fuel Suppliers", "Fuel"),
+                   ("debt", "Missed Debt Service", "Debt service"), ("om_floor", "Arrears on O&M Floor", "O&M floor"), ("ops", "Arrears on Own Operations", "Own operations"),
+                   ("junior", "Arrears to Junior Creditors", "Junior creditors")] + ([("reserve", "Reserve Account", "Reserve held")] if res_on else [])
+            _tc = sorted(_tc, key=lambda x: _rk[x[0]])
+            arr_df = pd.DataFrame({"Year": scenario["Calendar Year"].astype(int),
+                                   **{f"{lab} ({_rk[t]:g})": scenario[col] for t, col, lab in _tc},
+                                   "Total arrears": _arr, **({"State pays": scenario["State Shortfall Payment"]} if shortfall_rule == "state" else {}),
+                                   **({"Late interest": scenario["Late-payment Interest"]} if scenario["Late-payment Interest"].any() else {})})
             st.dataframe(arr_df.style.format({c: "{:,.0f}" for c in arr_df.columns if c != "Year"}), use_container_width=True, hide_index=True)
             st.markdown('<p class="sfp-hint"><b>The same scenario with and without the waterfall.</b> Without it the cash gap is borrowed as set above; '
-                        'with it nothing is borrowed and the gap stays as unpaid bills. Both are current liabilities, so the waterfall moves the shortfall '
-                        'between creditors rather than closing it. Refinancing, if set, applies in both. A jump in EFC can come from a single rating step '
-                        '(PD is set per rating band).</p>', unsafe_allow_html=True)
+                        'with it the routed share is not borrowed and stays as unpaid bills. Both are current liabilities, so the waterfall moves the shortfall '
+                        'between creditors rather than closing it; late-payment interest, a default on missed debt service, a State that pays the shortfall '
+                        'and supplier or State responses are what move Z-EM and EFC. Refinancing, if set, applies in both.</p>', unsafe_allow_html=True)
             _efc_col = "EFC_pct_GDP" if base_gdp else "EFC"
             cmp_df = pd.DataFrame({
                 "Year": scenario["Calendar Year"].astype(int),
@@ -711,8 +802,13 @@ else:
     gdp_final = shocks.gdp_path(base_gdp, gdp_growth, horizon_years)[-1] if base_gdp else None
 
     _yr = int(mc_final["Calendar Year"].iloc[0])
+    _gdp_s = shocks.gdp_path(base_gdp, gdp_growth, horizon_years) if base_gdp else None
+    _md = shocks.mc_default_summary(mc, _gdp_s)
     theme.stat_strip([
         theme.tile(f"Median EFC, year {horizon_years}", ov.money(p50_efc, _scale), _cur, f"{sel_entity} · {n_sims:,} simulations"),
+        theme.tile("Default within the horizon", f"{_md['p_default']:.1%}", "", f"{_pdm[pd_method].lower()} · the State bears EAD × LGD in the default year",
+                   status="alert" if _md["p_default"] >= 0.5 else "watch" if _md["p_default"] > 0 else "ok"),
+        theme.tile("Realised cost, p95 / p99", ov.money(_md["cost_p95"], _scale), _cur, f"p99 {ov.money(_md['cost_p99'], _scale)} · mean {ov.money(_md['cost_mean'], _scale)}"),
         theme.tile("Fiscal-at-risk (p95)", ov.money(p95_efc, _scale), _cur, "Bad but plausible: 1 in 20 draws is worse"),
         theme.tile("Ending in distress", f"{pct_distress:.0%}", "", f"of simulations, Z-EM ≤ {config.Z_DISTRESS_CUTOFF} in {_yr}",
                    status="alert" if pct_distress > 0.5 else "watch" if pct_distress > 0 else "ok"),

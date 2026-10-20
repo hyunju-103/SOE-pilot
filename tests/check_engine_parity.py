@@ -52,8 +52,8 @@ for (const [name, p] of Object.entries(inp.scenarios)) {
     const pp = Object.assign({}, p, { fuel_cost_share: inp.config.SECTOR_FUEL_COST_SHARE[r.Sector] ?? inp.config.SECTOR_FUEL_COST_SHARE.Other });
     const v = E.revenueVolatility(en, r.Entity);
     pp.revenue_shock_pct = pp.revenue_shock_std_devs * (Number.isFinite(v) ? v : (inp.config.SECTOR_REVENUE_VOLATILITY[r.Sector] ?? 0.15));
-    const path = E.costPath(E.runScenario(r, pp, inp.H), 70, null, pp.ead_share ?? 1);
-    out.paths[name][r.Entity] = { z: path.map(x => x.Z_EM), efc: path.map(x => x.EFC), rating: path.map(x => x.Rating), sub: path.map(x => x["Direct Fuel Subsidy"]), desc: E.describeShocks(pp), cash: path.map(x => CASH_KEYS.map(k => x[k])) };
+    const path = E.costPath(E.runScenario(r, pp, inp.H), 70, null, pp.ead_share ?? 1, pp);
+    out.paths[name][r.Entity] = { z: path.map(x => x.Z_EM), efc: path.map(x => x.EFC), rating: path.map(x => x.Rating), pd: path.map(x => x.PD), sub: path.map(x => x["Direct Fuel Subsidy"]), desc: E.describeShocks(pp), cash: path.map(x => CASH_KEYS.map(k => x[k])) };
   }
 }
 out.gre = inp.gre.map(([ent, role, link, sov, outl]) => { const g = E.gre(en, ent, role, link, sov, outl); return [g.capped, g.uplifted, g.notches, g.gap]; });
@@ -97,7 +97,10 @@ CASH_KEYS = ["Net Income", "Current Liabilities", "Current Assets", "Total Asset
              "Trapped VAT Credits", "Current Ratio", "Adjusted Current Ratio", "Debt to Assets", "Cash", "Cash Drawdown",
              "Interest Saved", "Emergency Support", "Tariff Share of RMA", "Refinanced Debt", "Cumulative Emergency Support", "New Long-term Debt",
              "Interest Expense", "Equity", "Unpaid Under Waterfall", "Underfunded Operations", "Reserve Draw", "Reserve Top-up",
-             "Arrears to IPPs", "Arrears to Fuel Suppliers", "Missed Debt Service", "Arrears on Own Operations", "Reserve Account"]
+             "Arrears to IPPs", "Arrears to Fuel Suppliers", "Missed Debt Service", "Arrears on Own Operations", "Reserve Account",
+             "Debt Default", "State Shortfall Payment", "Late-payment Interest", "Waterfall Routed Share", "Tariff Gap Compensation Change",
+             "Customer Arrears Change", "Arrears on O&M Floor", "Arrears to Junior Creditors", "Arrears to Statutory and Operator",
+             "Customer Arrears", "Cumulative State Shortfall Payment", "X1"]
 
 
 def close(a, b, tol=1e-6):
@@ -153,13 +156,30 @@ def main():
     cap = dict(oil, borrowing_cap_debt_to_assets=0.55, comp_paid_share=0.2)
     cap_waterfall = dict(cap, waterfall_on=1.0, fx_shock_pct=0.3)
     waterfall_legacy = dict(legacy, waterfall_on=1.0, refinance_share=1.0)
+    # waterfall v2: country orders, shortfall rules, compliance and ramp-up, late interest, baseline drivers, PD methods
+    wf2 = dict(oil, waterfall_on=1.0, comp_paid_share=0.2, ipp_cost_share=0.2, statutory_cost_share=0.03, om_floor_share=0.4,
+               junior_share=0.2, reserve_months=2, late_rate_priority=0.12, late_rate_debt=0.15, late_rate_other=0.05)
+    v2 = {
+        "wf_pari": dict(wf2, waterfall_order="pari_passu"),
+        "wf_fuel_first": dict(wf2, waterfall_order="fuel_first", shortfall_rule="junior"),
+        "wf_ghana": dict(wf2, waterfall_order="ghana", shortfall_rule="pro_rata", waterfall_compliance=0.6, waterfall_rampup_months=18),
+        "wf_civ_state": dict(wf2, waterfall_order="cote_divoire", shortfall_rule="state", waterfall_coverage=0.8, waterfall_start_year=2),
+        "wf_custom_ranks": dict(wf2, waterfall_order="custom", rank_debt=0, rank_om_floor=1, rank_ipp=2, rank_fuel=2, rank_reserve=3, rank_residual=4),
+        "wf_behaviour": dict(wf2, priority_discount=0.05, state_paid_uplift=0.5, default_on_missed_debt=0.0, pd_method="rating_tail"),
+        "baseline_drivers": dict(oil, cost_recovery_ratio=0.85, tariff_gap_state_share=0.5, receivable_current_share=0.3,
+                                 collect_households=0.9, collect_public=0.6, demand_growth=0.04, losses_change=0.02,
+                                 tariff_revenue_base="revenue_ex_grants", tariff_increase_pct=0.05),
+        "crr_full": dict(wf2, cost_recovery_ratio=1.1, pd_method="logistic"),
+        "refi_rating": dict(oil_policy, refinance_share=0.6, refinance_start_year=2, refinance_min_rating="CCC", pd_method="user", pd_user=0.07),
+        "pd_default40": dict(wf2, comp_paid_share=0.0, pd_on_default=0.4, pd_method="rating_tail", pd_logit_b=-0.8),
+    }
     scenarios = {"zero": zero, "combined": dict(config.DEFAULT_SHOCK_PARAMS), "custom": custom, "subsidy": subsidy, "overfull": overfull,
                  "oil": oil, "oil_policy": oil_policy, "overshoot": overshoot, "cheap_fuel": cheap_fuel, "legacy": legacy,
                  "path_step": path_step, "path_neg": path_neg, "linkage": linkage, "tariff_exg": tariff_exg,
                  "cash_floor": cash_floor, "cash_half": cash_half, "cash_off": cash_off,
                  "waterfall": waterfall, "waterfall_reserve": waterfall_reserve, "waterfall_stress": waterfall_stress,
                  "waterfall_custom": waterfall_custom, "refinance": refinance, "waterfall_refi": waterfall_refi, "cap": cap,
-                 "cap_waterfall": cap_waterfall, "waterfall_legacy": waterfall_legacy}
+                 "cap_waterfall": cap_waterfall, "waterfall_legacy": waterfall_legacy, **v2}
     mc_corr = {"fuel|fx": 0.3, "fuel|rate": 0.2, "fx|rate": 0.4, "fuel|revenue": -0.3, "fx|revenue": -0.2, "rate|revenue": 0.0}
     psd_cases = [{"fuel|fx": 0.3}, {"fuel|fx": 0.9, "fuel|rate": 0.9, "fx|rate": -0.9}, {"fuel|fx": 1.0, "fuel|rate": 1.0, "fx|rate": 1.0},
                  {"fuel|fx": 0.5, "fuel|rate": -0.5, "fx|rate": 0.5}, {"fuel|fx": -0.8, "fuel|rate": -0.8, "fx|rate": -0.8}]
@@ -221,12 +241,13 @@ def main():
             v = v if v == v else config.SECTOR_REVENUE_VOLATILITY.get(r["Sector"], 0.15)
             pp["revenue_shock_pct"] = pp["revenue_shock_std_devs"] * v
             path = shocks.run_scenario(r, pp, H)
-            path["PD"] = path["Rating"].apply(calculations.compute_pd_from_rating)
-            path["EFC"] = path["PD"] * (path["Total Liabilities"] * pp.get("ead_share", 1.0)) * 0.7
+            path = shocks.add_cost(path, 70, pp.get("ead_share", 1.0), pp)
             j = js["paths"][name][r["Entity"]]
             for t in range(H + 1):
                 if not close(path["Z_EM"].iloc[t], j["z"][t], 1e-9) or not close(path["EFC"].iloc[t], j["efc"][t], 1e-9) or path["Rating"].iloc[t] != j["rating"][t]:
                     fails.append(f"path {name} {r['Entity']} t={t}: py={path['Z_EM'].iloc[t]:.6f}/{path['Rating'].iloc[t]} js={j['z'][t]}/{j['rating'][t]}")
+                if not close(path["PD"].iloc[t], j["pd"][t], 1e-12):
+                    fails.append(f"pd {name} {r['Entity']} t={t}: py={path['PD'].iloc[t]} js={j['pd'][t]}")
                 if not close(path["Direct Fuel Subsidy"].iloc[t], j["sub"][t], 1e-9):
                     fails.append(f"fuel subsidy {name} {r['Entity']} t={t}: py={path['Direct Fuel Subsidy'].iloc[t]} js={j['sub'][t]}")
                 for k, jv in zip(CASH_KEYS, j["cash"][t]):
