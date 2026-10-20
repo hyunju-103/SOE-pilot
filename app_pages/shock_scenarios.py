@@ -31,7 +31,7 @@ with st.expander("What do these shocks mean?"):
     rows = "".join(
         f"<tr><td style='font-weight:700;white-space:nowrap;'>{term}</td><td>{config.GLOSSARY[term]}</td></tr>"
         for term in ["Fuel shock", "Tariff pass-through", "Tariff increase", "State compensation", "State compensation receivable",
-                     "Cash funding gap", "Adjusted current ratio", "Cash waterfall", "Shortfall rule", "Underfunded operations", "Cost-recovery ratio", "Refinancing", "Emergency support", "Logistic PD", "RMA coverage", "FX shock", "Interest rate shock",
+                     "Cash funding gap", "Adjusted current ratio", "Cash waterfall", "Shortfall rule", "Underfunded operations", "Cost-recovery ratio", "Refinancing", "Emergency support", "Continuous rating curve", "Logistic PD", "RMA coverage", "FX shock", "Interest rate shock",
                      "Revenue shock", "Refinancing shock", "Government arrears", "Monte Carlo simulation", "Fiscal-at-risk"]
     )
     st.markdown(f"<table class='sfp-table sfp-table-wrap'><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
@@ -409,17 +409,20 @@ with gc2:
     )
 with gc3:
     gdp_growth = st.slider("Assumed nominal GDP growth (%/yr)", -5.0, 15.0, config.DEFAULT_GDP_GROWTH * 100, 0.5) / 100.0
-_pdm = {"rating": "Rating bands (at most 40%)", "rating_tail": "Rating bands with a logistic tail (above 40%)", "logistic": "Logistic in Z-EM", "user": "User-specified"}
+_pdm = {"rating": "Rating bands (at most 40%)", "rating_curve": "Continuous rating curve", "logistic": "Logistic fitted to the rating table", "user": "User-specified"}
 pc1, pc2, pc3 = st.columns(3)
 with pc1:
     pd_method = st.selectbox("Probability of default (PD)", list(_pdm), format_func=_pdm.get,
-                             help="Rating bands stop at 40% (rating D). The logistic tail keeps PD rising below the D threshold; logistic applies 1/(1+e^−(a+bZ)) to every Z; user = one PD for every year.")
+                             help="Single scenario (the Monte Carlo has its own setting). Rating bands stop at 40% (rating D) and jump at each band edge. "
+                                  "The continuous rating curve equals the band PD at the middle of each band, joins them without jumps and rises past 40% below "
+                                  "the D band. The logistic is one curve fitted to the rating table (a −2.33, b −1.28). User = one PD for every year.")
 with pc2:
-    pd_logit_b = st.slider("Logistic slope b", -3.0, -0.2, float(config.DEFAULT_CASH_SETTINGS["pd_logit_b"]), 0.01, disabled=pd_method not in ("rating_tail", "logistic"))
+    pd_logit_b = st.slider("Slope b (logistic; curve below the D band)", -3.0, -0.2, float(config.DEFAULT_CASH_SETTINGS["pd_logit_b"]), 0.01,
+                           disabled=pd_method not in ("rating_curve", "logistic"))
     pd_logit_a = st.slider("Logistic intercept a", -5.0, 1.0, float(config.DEFAULT_CASH_SETTINGS["pd_logit_a"]), 0.01, disabled=pd_method != "logistic")
 with pc3:
     pd_user = st.slider("User PD (every year)", 0.0, 1.0, float(config.DEFAULT_CASH_SETTINGS["pd_user"]), 0.01, disabled=pd_method != "user")
-    pd_on_default = st.select_slider("PD in a year with debt service missed", options=[0.4, 1.0], value=1.0, format_func=lambda v: f"{v:.0%}")
+    pd_on_default = st.select_slider("PD in a year with debt service missed (only if that counts as default)", options=[0.4, 1.0], value=1.0, format_func=lambda v: f"{v:.0%}")
 params.update(pd_method=pd_method, pd_logit_a=pd_logit_a, pd_logit_b=pd_logit_b, pd_user=pd_user, pd_on_default=pd_on_default)
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -749,6 +752,10 @@ else:
     with c1:
         n_sims = st.slider("Simulations", 100, 5000, config.MC_DEFAULT_SIMULATIONS, 100,
                             help="How many random shock draws to run. More simulations give a smoother distribution but take longer to compute.")
+        mc_pd_method = st.selectbox("PD in the simulations", list(_pdm), index=list(_pdm).index("rating_curve"), format_func=_pdm.get,
+                                    help="Default: the continuous rating curve, so a draw just across a band edge does not jump to the next band's PD. "
+                                         "The Monte Carlo reports expected fiscal cost (PD × EAD × LGD); it does not simulate default events.")
+        params["mc_pd_method"] = mc_pd_method
     with c2:
         fuel_std = st.slider("Fuel shock std. dev.", 0.01, 0.30, config.MC_DEFAULT_FUEL_STD, 0.01,
                               help="How much the fuel shock varies across simulations, centered on the Fuel tab's slider value. Higher = wider range of scenarios tested.")
@@ -785,7 +792,6 @@ else:
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.info(f"Monte Carlo PD: calibrated full logistic (a={pd_logit_a:.3f}, b={pd_logit_b:.3f}). The rating-based PD option above still applies to the single-scenario view; Monte Carlo uses the full logistic curve.")
     try:
         with st.spinner(f"Running {n_sims} simulations..."):
             mc = shocks.run_monte_carlo(base_row, params, n_sims=n_sims, fuel_std=fuel_std, fx_std=fx_std,
@@ -803,13 +809,8 @@ else:
     gdp_final = shocks.gdp_path(base_gdp, gdp_growth, horizon_years)[-1] if base_gdp else None
 
     _yr = int(mc_final["Calendar Year"].iloc[0])
-    _gdp_s = shocks.gdp_path(base_gdp, gdp_growth, horizon_years) if base_gdp else None
-    _md = shocks.mc_default_summary(mc, _gdp_s)
     theme.stat_strip([
-        theme.tile(f"Median EFC, year {horizon_years}", ov.money(p50_efc, _scale), _cur, f"{sel_entity} · {n_sims:,} simulations"),
-        theme.tile("Default within the horizon", f"{_md['p_default']:.1%}", "", "calibrated full logistic · the State bears EAD × LGD in the default year",
-                   status="alert" if _md["p_default"] >= 0.5 else "watch" if _md["p_default"] > 0 else "ok"),
-        theme.tile("Realised cost, p95 / p99", ov.money(_md["cost_p95"], _scale), _cur, f"p99 {ov.money(_md['cost_p99'], _scale)} · mean {ov.money(_md['cost_mean'], _scale)}"),
+        theme.tile(f"Median EFC, year {horizon_years}", ov.money(p50_efc, _scale), _cur, f"{sel_entity} · {n_sims:,} simulations · PD: {_pdm[mc_pd_method].lower()}"),
         theme.tile("Fiscal-at-risk (p95)", ov.money(p95_efc, _scale), _cur, "Bad but plausible: 1 in 20 draws is worse"),
         theme.tile("Ending in distress", f"{pct_distress:.0%}", "", f"of simulations, Z-EM ≤ {config.Z_DISTRESS_CUTOFF} in {_yr}",
                    status="alert" if pct_distress > 0.5 else "watch" if pct_distress > 0 else "ok"),

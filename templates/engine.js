@@ -194,7 +194,7 @@
         ArrIPP: 0, ArrFuel: 0, ArrDebt: 0, ArrOps: 0, Reserve: 0, // cash waterfall: arrears by priority tier and the reserve account
         ArrStat: 0, ArrFloor: 0, ArrJun: 0, StateShortfall: 0, CustArrears: 0,
         // snapshot rules: a year with debt service unpaid is rated D; share of the State receivable in current assets
-        DefaultRule: num(p.default_on_missed_debt, 1) > 0,
+        DefaultRule: num(p.default_on_missed_debt, 0) > 0,
         RecvCurrent: Math.min(1, Math.max(0, num(p.receivable_current_share, 1))),
       };
       const grants0 = num(base[K.grants], NaN);
@@ -446,14 +446,40 @@
     // the D band: its upper Z bound and PD anchor the logistic tail
     const Z_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], PD_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][3];
     const logistic = (x) => (isNum(x) ? 1 / (1 + Math.exp(-x)) : NaN);
+    /** shocks.rating_curve_points: (Z, log-odds of the band PD) at the middle of each band, ascending in Z */
+    const CURVE = (() => {
+      const t = CFG.Z_RATING_TABLE, pts = [];
+      t.forEach(([lo, hi, , pd], i) => {
+        const inf = (v) => v === null || v === Infinity || v === -Infinity || !isNum(v);
+        let z;
+        if (inf(hi) && i === 0) z = lo + (t[i + 1][1] - t[i + 1][0]) / 2;
+        else if (inf(lo) && i === t.length - 1) z = hi - (t[i - 1][1] - t[i - 1][0]) / 2;
+        else z = (lo + hi) / 2;
+        pts.push([z, Math.log(pd / (1 - pd))]);
+      });
+      return pts.sort((a, b) => a[0] - b[0]);
+    })();
+    /** shocks.rating_curve_pd */
+    function ratingCurvePd(z, tailB = -1.28) {
+      if (!isNum(z)) return NaN;
+      const [loZ, loL] = CURVE[0];
+      if (z <= loZ) return logistic(loL + tailB * (z - loZ));
+      if (z >= CURVE[CURVE.length - 1][0]) return logistic(CURVE[CURVE.length - 1][1]);
+      for (let i = 0; i < CURVE.length - 1; i++) {
+        const [z0, l0] = CURVE[i], [z1, l1] = CURVE[i + 1];
+        if (z <= z1) return logistic(l0 + ((z - z0) / (z1 - z0)) * (l1 - l0));
+      }
+      return logistic(CURVE[CURVE.length - 1][1]);
+    }
     /** shocks.pd_value */
     function pdValue(z, rating, debtDefault, p) {
       p = p || {};
       if (debtDefault) return isNum(p.pd_on_default) ? p.pd_on_default : 1;
       const method = p.pd_method ? String(p.pd_method) : "rating";
       if (method === "user") return Math.min(1, Math.max(0, isNum(p.pd_user) ? p.pd_user : 0.1));
-      const b = isNum(p.pd_logit_b) ? p.pd_logit_b : -1.17;
-      if (method === "logistic") return isNum(z) ? logistic((isNum(p.pd_logit_a) ? p.pd_logit_a : -2.18) + b * z) : NaN;
+      const b = isNum(p.pd_logit_b) ? p.pd_logit_b : -1.28;
+      if (method === "rating_curve") return ratingCurvePd(z, b);
+      if (method === "logistic") return isNum(z) ? logistic((isNum(p.pd_logit_a) ? p.pd_logit_a : -2.33) + b * z) : NaN;
       if (method === "rating_tail" && isNum(z) && z < Z_D) return logistic(Math.log(PD_D / (1 - PD_D)) + b * (z - Z_D));
       return pdByRating(rating);
     }
@@ -566,7 +592,7 @@
       const cap = isNum(p.borrowing_cap_debt_to_assets) ? p.borrowing_cap_debt_to_assets : 0;
       if (cap > 0) pol.push(`borrowing cap ${cap.toFixed(2)} debt/assets`);
       const pdm = p.pd_method ? String(p.pd_method) : "rating";
-      if (pdm !== "rating") pol.push({ rating_tail: "PD: rating bands with a logistic tail", logistic: "PD: logistic in Z-EM", user: "PD: user-specified" }[pdm] || "PD: " + pdm);
+      if (pdm !== "rating") pol.push({ rating_curve: "PD: continuous rating curve", rating_tail: "PD: rating bands with a logistic tail", logistic: "PD: logistic in Z-EM", user: "PD: user-specified" }[pdm] || "PD: " + pdm);
       const sfx = pol.length ? " · " + pol.join(", ") : "";
       if (!parts.length) return "No shock applied (baseline)" + sfx;
       return parts.join(", ") + (p.shock_duration_years && stepOn ? ` — active ${p.shock_duration_years}yr` : "") + sfx;
@@ -643,7 +669,8 @@
       let sigma = p.revenue_sigma ?? null;
       if (sigma === null && p.revenue_shock_std_devs) sigma = (p.revenue_shock_pct || 0) / p.revenue_shock_std_devs;
       if (names.includes("revenue") && sigma === null) throw new Error("revenue_sigma is needed to draw revenue shocks");
-      const drawDefaults = (isNum(p.mc_default_draws) ? p.mc_default_draws : 1) > 0;
+      const drawDefaults = (isNum(p.mc_default_draws) ? p.mc_default_draws : 0) > 0;
+      const pc = Object.assign({}, p, { pd_method: p.mc_pd_method ? String(p.mc_pd_method) : "rating_curve" }); // the Monte Carlo's own PD
       const uDef = uniformRng((o.seed ?? 42) + 1);              // separate stream: the shock draws are unchanged
       for (let i = 0; i < n; i++) {
         const d = Object.fromEntries(names.map((nm, k) => [nm, 0])), v = draw();
@@ -652,7 +679,7 @@
         if (fp) sp.fuel_shock_path = peak ? fp.map((v) => d.fuel * (v / peak)) : fp.slice();
         if ("rate" in d) sp.rate_shock_bps = d.rate;
         if ("revenue" in d) { sp.revenue_shock_std_devs = d.revenue; sp.revenue_shock_pct = d.revenue * sigma; }
-        const path = costPath(runScenario(base, sp, H), o.lgd, o.gdp || null, o.eadShare ?? 1, p);
+        const path = costPath(runScenario(base, sp, H), o.lgd, o.gdp || null, o.eadShare ?? 1, pc);
         // materialisation: the path defaults in the first year a draw falls below that year's PD, or debt service goes unpaid
         let dYear = 0, cost = 0;
         const u = Array.from({ length: Math.max(1, H) }, () => uDef());
@@ -960,7 +987,7 @@
     return {
       isNum, div, classifyZone, zRating, enrich, enrichRow, availableKpis, classify, pdByRating, worstPdInZone, efcRow,
       recoveryScenarios, revenueVolatility, ratingIndex, notchChange, latestPerEntity, runScenario, costPath, kpiImpact,
-      gdpPath, describeShocks, monteCarlo, mcDefaultSummary, pdValue, cumulativePd, waterfallRanks, rampShare, ratingAtLeast, quantile, percentilePath, singleNarrative, crossNarrative, zTrendSummary,
+      gdpPath, describeShocks, monteCarlo, mcDefaultSummary, pdValue, cumulativePd, ratingCurvePd, waterfallRanks, rampShare, ratingAtLeast, quantile, percentilePath, singleNarrative, crossNarrative, zTrendSummary,
       zoneSummary, gre, ZCOMP, K, soeExposures, symEig, mcFactor, MC_VARIABLES, normalizeLabel, seqRatio, matchColumn,
       standardizeColumns, BY_COLUMN, findHeaderRow, parseNumber, parseYear, detectDelimiter, parseDelimited, frameFromRows,
     };

@@ -409,7 +409,7 @@ DEFAULT_CASH_SETTINGS = {
     "late_rate_priority": 0.0,          # late-payment interest on arrears to IPPs and fuel suppliers (PPA penalty rate)
     "late_rate_debt": 0.0,              # default interest on missed debt service
     "late_rate_other": 0.0,             # late-payment interest on statutory, own-operations and junior arrears
-    "default_on_missed_debt": 1.0,      # 1 = a year with debt service unpaid is rated D (PD of the D band)
+    "default_on_missed_debt": 0.0,      # 1 = a year with debt service unpaid is rated D, PD = pd_on_default (off: on hold, Oct 2026)
     # behaviour under the waterfall
     "priority_discount": 0.0,           # price cut on fuel and IPP bills that priority creditors grant in return
     "state_paid_uplift": 0.0,           # points added to the State's in-year payment shares once the waterfall runs
@@ -423,13 +423,15 @@ DEFAULT_CASH_SETTINGS = {
     "demand_growth": 0.0,               # yearly growth of sales and cash operating costs
     "losses_change": 0.0,               # change in network losses, share of billed sales lost at the same cost
     # probability of distress on the Shock Scenarios page
-    "pd_method": "rating",              # "rating" (band PD, max 40%), "rating_tail" (bands, then a logistic tail below the D threshold),
-                                        # "logistic" (PD = 1 / (1 + exp(-(a + b Z))) everywhere) or "user" (a fixed annual PD)
-    "pd_logit_a": -1.92665108,                # weighted PD-scale calibration to current rating cohort table (see docs/PD_CALIBRATION.md)
-    "pd_logit_b": -0.88741214,                # weighted PD-scale calibration (see docs/PD_CALIBRATION.md)
+    "pd_method": "rating",              # single scenario and all SOEs: "rating" (band PD, max 40%), "rating_curve" (continuous
+                                        # curve through the band PDs, rising past 40% below the D band), "logistic" (one logistic
+                                        # curve fitted to the band table) or "user" (a fixed annual PD); "rating_tail" kept for old runs
+    "mc_pd_method": "rating_curve",     # Monte Carlo: a continuous PD, so draws near a band edge do not jump (task team, 20 Oct 2026)
+    "pd_logit_a": -2.33,                # logistic intercept: least squares of the band log-odds on Z at the band anchors
+    "pd_logit_b": -1.28,                # logistic slope on Z, same fit; also the slope of the curve below the D band
     "pd_user": 0.10,                    # annual PD when pd_method = "user"
-    "pd_on_default": 1.0,               # PD in a year with debt service unpaid (1 = the default has happened; 0.40 = the D band)
-    "mc_default_draws": 1.0,            # Monte Carlo: draw defaults from each path's PD (1) and count missed debt service as default
+    "pd_on_default": 1.0,               # PD in a year with debt service unpaid, when that counts as default (default_on_missed_debt)
+    "mc_default_draws": 0.0,            # Monte Carlo: draw default events from each path's PD (on hold: the Monte Carlo reports EFC only)
     # Refinancing (separate assumption, off by default): short-term bank debt replaced
     # by long-term loans in the first projection year.
     "refinance_share": 0.0,             # share of short-term bank debt refinanced
@@ -663,6 +665,7 @@ GLOSSARY = {
     "Cost-recovery ratio": "Average tariff divided by the full cost of supply (here operating expense, including depreciation, plus interest). Below 100%, the tariff gap has to be covered by State compensation or absorbed by the SOE.",
     "Shortfall rule": "Under the cash waterfall, who bears the part of the bills the cash cannot pay: the SOE's own operations, junior creditors (other suppliers, regulators, capex), both pro rata, or the State through a budget transfer.",
     "Logistic PD": "A probability of default that keeps rising as the Z-EM score falls, along an S-shaped curve PD = 1 / (1 + e^−(a + b·Z)), instead of stopping at the 40% of the lowest rating band.",
+    "Continuous rating curve": "A PD that equals the rating band's PD at the middle of each band and moves smoothly between bands, so a small change in Z-EM never makes PD jump; below the lowest band it keeps rising past 40%.",
     "Refinancing": "Replacing short-term bank debt (overdrafts) with long-term loans. It moves debt out of current liabilities and can lower the interest rate, but it is a separate assumption: it depends on lenders agreeing, not on the payment order.",
     "Emergency support": "A capital injection from the government once the SOE cannot borrow any more (here: when total liabilities would pass a set share of total assets). It is a direct cost to the budget, on top of the expected fiscal cost.",
     "RMA coverage": "Customer revenue (revenue less government grants, plus any tariff increase or pass-through) as a share of the regulator's Maximum Authorized Revenue (RMA) after the fuel-cost change. The rest has to come from the State.",
@@ -945,8 +948,9 @@ PARAMETER_REGISTER = [
        "Task team review: allow a phase-in of 12 to 24 months; linear, averaged over each year", "Shock Scenarios"),
     _p("Fuel policy and cash", "Late-payment interest on arrears", "0% (IPPs and fuel, debt, other)", "placeholder",
        "Set from the PPA late-payment clauses, fuel contracts and loan documents; on arrears at the start of each year", "Shock Scenarios"),
-    _p("Fuel policy and cash", "Missed debt service = default", "on: rated D, PD on default 100% (40% option)", "design",
-       "A year that ends with debt service unpaid under the waterfall is a payment default (team discussion with H. Hiro, Oct 2026)", "Shock Scenarios"),
+    _p("Fuel policy and cash", "Missed debt service = default", "off (option: rated D, PD on default 100% or 40%)", "design",
+       "Option: a year that ends with debt service unpaid under the waterfall is a payment default. Off by default: actual default events are on hold "
+       "and the tool reports expected fiscal cost (task team, 20 Oct 2026); unpaid debt service still shows in the arrears", "Shock Scenarios"),
     _p("Fuel policy and cash", "Supplier and State responses", "price cut 0%, State paid share +0", "placeholder",
        "Task team review: scenario parameters for supplier terms in return for priority and for more reliable State payment; 0 = no behavioural response", "Shock Scenarios"),
     _p("Tariffs and collections", "Cost-recovery ratio", "as in the data (0); test 85–110%", "user",
@@ -961,12 +965,18 @@ PARAMETER_REGISTER = [
        "Task team review: public administrations usually the weakest payer. Sales shares are placeholders; set from the SOE's billing data", "Shock Scenarios"),
     _p("Tariffs and collections", "Demand growth and losses", "0% / 0%", "user",
        "Macro drivers in the task team review; demand growth scales sales and cash costs together, losses cut customer revenue at the same cost", "Shock Scenarios"),
-    _p("Probability of distress", "PD method", f"{DEFAULT_CASH_SETTINGS['pd_method']}; logistic a {DEFAULT_CASH_SETTINGS['pd_logit_a']}, b {DEFAULT_CASH_SETTINGS['pd_logit_b']}", "placeholder",
-       "Comment by H. Hiro (Oct 2026): PD should keep rising beyond 40% as distress deepens. Rating bands (cap 40%); rating bands with a logistic tail "
-       "anchored at 40% at the D threshold; logistic 1/(1+e^−(a+bZ)); or a user PD. a and b to be calibrated (country defaults, agency curves or a "
-       "judgement anchor)", "Shock Scenarios"),
-    _p("Probability of distress", "Default materialisation (Monte Carlo)", "on", "design",
-       "Each simulation defaults in the first year a uniform draw falls below that year's PD (or debt service is missed); realised cost = EAD × LGD in that year", "Shock Scenarios (Monte Carlo)"),
+    _p("Probability of distress", "PD method (single scenario)", "rating bands (options: continuous rating curve, fitted logistic, user)", "design",
+       "Rating bands by default, as before. The continuous rating curve and the logistic answer the comment that the band PD jumps and stops at 40% "
+       "(H. Hiro; task team, 20 Oct 2026)", "Shock Scenarios"),
+    _p("Probability of distress", "PD in the Monte Carlo", "continuous rating curve", "design",
+       "Task team (20 Oct 2026): a continuous PD for the Monte Carlo, close to the rating PDs. The curve equals the band PD at the middle of each band "
+       "(open bands: AAA at 5.175, D at −1.875), is linear in log-odds in between, flat above AAA and rises past 40% below D with slope "
+       f"{DEFAULT_CASH_SETTINGS['pd_logit_b']}. A single logistic cannot keep the CCC+ band (about 8% instead of 16.3%), so it is an option only", "Shock Scenarios (Monte Carlo)"),
+    _p("Probability of distress", "Logistic parameters", f"a {DEFAULT_CASH_SETTINGS['pd_logit_a']}, b {DEFAULT_CASH_SETTINGS['pd_logit_b']}", "literature",
+       "Least squares of the band log-odds on Z-EM at the band anchors of the rating cohort table; b is also the slope of the curve below D", "Shock Scenarios"),
+    _p("Probability of distress", "Default events in the Monte Carlo", "off (on hold)", "design",
+       "Task team (20 Oct 2026): the Monte Carlo reports expected fiscal cost only; default draws (realised cost = EAD × LGD in a default year) stay "
+       "in the engine (mc_default_draws) but are off and not shown", "Shock Scenarios (Monte Carlo)"),
     _p("Fuel policy and cash", "IPP purchases, share of operating expense", f"{DEFAULT_CASH_SETTINGS['ipp_cost_share']:.0%} (oil preset {OIL_SHOCK_PRESET['ipp_cost_share']:.0%})", "proxy",
        "SENELEC 2022: purchased electricity ≈ COGS 647.4 bn − fuel 494.9 bn = 152.5 bn, / operating expense 888.5 bn; includes OMVS and imports, "
        "so an upper bound for IPPs alone. Used only to size tier 1 of the waterfall", "Shock Scenarios"),

@@ -380,8 +380,8 @@ which the utility borrows to cover.
     The waterfall creates no cash: after the SOE's own cash, the routed
     shortfall is not borrowed but left unpaid from the lowest rank up — or
     paid by the State (`shortfall_rule`) — as current liabilities that carry
-    late-payment interest (`late_rate_*`). A year that ends with debt service
-    unpaid is rated D (`default_on_missed_debt`, PD on default 100% or 40%).
+    late-payment interest (`late_rate_*`). Optionally, a year that ends with
+    debt service unpaid is rated D (`default_on_missed_debt`, off by default).
     Supplier and State responses (`priority_discount`, `state_paid_uplift`)
     are scenario parameters. A later surplus pays arrears from the top rank
     down and tops up the reserve; cash outside the waterfall is borrowed as
@@ -393,12 +393,16 @@ which the utility borrows to cover.
     (`receivable_current_share`), collection rates for households, large
     private customers and public administrations (unpaid bills become
     `Customer Arrears`), demand growth and network losses.
-  - *Probability of default* (`pd_method`, below LGD and EAD): rating bands
-    (at most 40%), rating bands with a logistic tail below the D threshold,
-    a logistic curve in Z-EM, or a user value. The Monte Carlo view also
-    draws defaults (`mc_default_draws`): the share of simulations that
-    default within the horizon and the realised cost (EAD × LGD) — mean,
-    95th and 99th percentiles.
+  - *Probability of default*: the single scenario uses `pd_method` (below LGD
+    and EAD; rating bands by default, as before) and the Monte Carlo uses
+    `mc_pd_method` (its settings card; default the continuous rating curve).
+    The continuous rating curve equals each rating band's PD at the middle of
+    the band and joins them linearly in log-odds, so PD does not jump at a band
+    edge; below the D band it keeps rising past 40%. Also available: one
+    logistic fitted to the rating table (a −2.33, b −1.28) and a user PD. The
+    Monte Carlo reports expected fiscal cost; default draws are on hold (off).
+    A year with debt service unpaid under the waterfall can be rated D
+    (`default_on_missed_debt`, off by default).
   - *Refinancing* (separate assumption, `refinance_share`, 0 = off): in
     `refinance_start_year` (default 1), or later once the previous year's
     rating meets `refinance_min_rating`, that share of the short-term bank debt (the
