@@ -1616,10 +1616,11 @@
       showEx();
       const sl2 = (label, k, mn, mx, step, f, help) => fSlider(label, { min: mn, max: mx, step, value: ok(e[k]) ? e[k] : CFG.DEFAULT_CASH_SETTINGS[k], fmt: f, id: "sh-" + k, info: help }, (v) => { e[k] = v; showEx(); this.schedule(); });
       return [
+        S.sh.view === "mc" ? el("p", { class: "note" }, `Monte Carlo always uses calibrated full logistic PD: a=${fmt(e.pd_logit_a, 3)}, b=${fmt(e.pd_logit_b, 3)}. The selector below controls deterministic views only.`) : null,
         fSelect("Probability of default (PD)", PD_METHODS, m, (v) => { e.pd_method = v; rebuild(); },
           { info: "Rating bands: PD by Z-EM rating, at most 40% (rating D). Logistic tail: the same bands, but below the D threshold (Z-EM " + fmt(CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], 1) + ") PD keeps rising along a logistic curve from 40% towards 100%. Logistic: PD = 1 / (1 + e^−(a + b·Z)) for every Z. User: one PD for every year. Applies to the Shock Scenarios page (single scenario, Monte Carlo, all SOEs)." }),
-        m === "rating_tail" || m === "logistic" ? sl2("Logistic slope b", "pd_logit_b", -3, -0.2, 0.01, (v) => fmt(v, 2), "How fast PD rises as Z-EM falls (negative). Default −1.17. Placeholder until calibrated (country defaults, rating-agency curves or a judgement anchor).") : null,
-        m === "logistic" ? sl2("Logistic intercept a", "pd_logit_a", -5, 1, 0.01, (v) => fmt(v, 2), "Log-odds of default at Z-EM = 0. Default −2.18 (PD ≈ 10% at Z = 0).") : null,
+        m === "rating_tail" || m === "logistic" ? sl2("Logistic slope b", "pd_logit_b", -3, -0.2, 0.01, (v) => fmt(v, 2), "How fast PD rises as Z-EM falls (negative). Calibrated against the current illustrative rating table; update with observed defaults when available.") : null,
+        m === "logistic" ? sl2("Logistic intercept a", "pd_logit_a", -5, 1, 0.01, (v) => fmt(v, 2), "Log-odds of default at Z-EM = 0. Calibrated against the existing rating PD table; methodological details in docs/PD_CALIBRATION.md.") : null,
         m === "user" ? sl2("PD (every year)", "pd_user", 0, 1, 0.01, pctAuto, "A PD set by the user, applied to every projection year.") : null,
         el("div", { class: "fld" }, el("span", { class: "lbl" }, "PD in a year with debt service missed", info("When the cash waterfall leaves debt service unpaid and that counts as default (Cash & financing tab), the year is rated D and its PD is this value.")),
           seg([[1, "100%"], [0.4, "40%"]], (ok(e.pd_on_default) ? e.pd_on_default : 1) >= 1 ? 1 : 0.4, (v) => { e.pd_on_default = v; this.schedule(); }, "PD on default")),
@@ -1942,10 +1943,10 @@
     renderMC(b, p, gs) {
       const st = S.sh, m = st.mc, H = this.H;
       const fpk = p.fuel_shock_path && p.fuel_shock_path.length ? p.fuel_shock_path.reduce((a, v) => (Math.abs(v) > Math.abs(a) ? v : a), p.fuel_shock_path[0]) : null;
-      H.mcnote.textContent = `Draws are centred on the sliders (mean fuel shock ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " = the peak of the fuel price path, each draw rescaling the whole path"}, mean FX shock ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, mean rate shock ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, mean revenue shock ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + "); all other parameters stay at their slider values.";
+      H.mcnote.textContent = `Monte Carlo PD: calibrated full logistic (a = ${fmt(p.pd_logit_a, 3)}, b = ${fmt(p.pd_logit_b, 3)}), regardless of the deterministic PD selection. ` + `Draws are centred on the sliders (mean fuel shock ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " = the peak of the fuel price path, each draw rescaling the whole path"}, mean FX shock ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, mean rate shock ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, mean revenue shock ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + "); all other parameters stay at their slider values.";
       let sims;
       try {
-        sims = E.monteCarlo(b, p, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });
+        sims = E.monteCarlo(b, { ...p, pd_method: "logistic" }, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });
       } catch (e) {
         H.mcerr.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, e.message));
         H.mcres.hidden = true;
@@ -1962,7 +1963,7 @@
         tile("Fiscal-at-risk (p95)", null, null, money(p95), CUR, "Bad but plausible: 1 in 20 draws is worse"),
         tile("Ending in distress", dist > 0.5 ? "alert" : dist > 0 ? "watch" : "ok", null, pct(dist, 0), "", `of simulations, Z-EM ≤ ${CFG.Z_DISTRESS_CUTOFF} in ${last(fin)["Calendar Year"]}`),
         tile("Fiscal-at-risk / GDP", null, null, gF ? pctS(p95 / gF) : "—", "", gF ? `GDP in ${last(fin)["Calendar Year"]}: ${money(gF)}` : "Enter GDP in the panel"));
-      this.renderDefaults(sims, p, gs);
+      this.renderDefaults(sims, { ...p, pd_method: "logistic" }, gs);
       histogram(H.zh.body.lastChild, fin.map((r) => r.Z_EM), { zones: true, vlines: [{ x: CFG.Z_DISTRESS_CUTOFF, cls: "thr-crit" }, { x: CFG.Z_SAFE_CUTOFF, cls: "thr-warn" }] });
       const zc = zoneCounts(fin);
       H.zd.body.firstChild.replaceChildren(el("div", { class: "hero", style: "gap:12px" }, el("div", { class: "hero-value", style: "font-size:40px" }, pct(dist, 0), el("small", {}, "of simulations end in distress")), ...zoneBar(zc, fin.length),

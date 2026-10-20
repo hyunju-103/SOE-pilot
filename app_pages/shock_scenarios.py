@@ -785,6 +785,7 @@ else:
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
+    st.info(f"Monte Carlo PD: calibrated full logistic (a={pd_logit_a:.3f}, b={pd_logit_b:.3f}). The rating-based PD option above still applies to the single-scenario view; Monte Carlo uses the full logistic curve.")
     try:
         with st.spinner(f"Running {n_sims} simulations..."):
             mc = shocks.run_monte_carlo(base_row, params, n_sims=n_sims, fuel_std=fuel_std, fx_std=fx_std,
@@ -806,7 +807,7 @@ else:
     _md = shocks.mc_default_summary(mc, _gdp_s)
     theme.stat_strip([
         theme.tile(f"Median EFC, year {horizon_years}", ov.money(p50_efc, _scale), _cur, f"{sel_entity} · {n_sims:,} simulations"),
-        theme.tile("Default within the horizon", f"{_md['p_default']:.1%}", "", f"{_pdm[pd_method].lower()} · the State bears EAD × LGD in the default year",
+        theme.tile("Default within the horizon", f"{_md['p_default']:.1%}", "", "calibrated full logistic · the State bears EAD × LGD in the default year",
                    status="alert" if _md["p_default"] >= 0.5 else "watch" if _md["p_default"] > 0 else "ok"),
         theme.tile("Realised cost, p95 / p99", ov.money(_md["cost_p95"], _scale), _cur, f"p99 {ov.money(_md['cost_p99'], _scale)} · mean {ov.money(_md['cost_mean'], _scale)}"),
         theme.tile("Fiscal-at-risk (p95)", ov.money(p95_efc, _scale), _cur, "Bad but plausible: 1 in 20 draws is worse"),

@@ -705,6 +705,8 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
     With only fuel and FX drawn, the draws are identical to the original
     two-variable version for the same seed.
     Returns a LONG-format DataFrame — one row per (simulation, year)."""
+    # John (Oct 2026): smooth full-logistic PD in Monte Carlo; leave deterministic PD choice intact.
+    params = dict(params, pd_method="logistic")
     rng = np.random.default_rng(seed)
     draw_defaults = _num(params.get("mc_default_draws"), 1.0) > 0
     u_def = np.random.default_rng(seed + 1).random((n_sims, max(1, horizon_years)))   # separate stream: shock draws unchanged
