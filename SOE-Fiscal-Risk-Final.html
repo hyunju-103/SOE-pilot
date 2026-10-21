@@ -571,17 +571,17 @@ body{background:var(--bg);}
 .card-head h3{font-size:15.5px}
 .tile{border-radius:11px}
 .btn,.btn-ghost,.seg,.chip{border-radius:7px}
-.journey-section{margin:12px 0 22px;border:1px solid #d7e5f3;border-radius:14px;overflow:hidden;background:var(--surface);box-shadow:0 6px 20px rgba(6,47,84,.06)}
-.journey-heading{background:linear-gradient(100deg,#064b81,#1264a3);color:#fff;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:12px 18px}
-.journey-heading h3{color:#fff;font-size:16px;margin-top:2px}
-.journey-kicker{font-size:10px;letter-spacing:.12em;font-weight:700;color:#b6e3fc}
-.journey-formula{font-size:11px;font-weight:700;border-radius:40px;padding:6px 11px;background:rgba(255,255,255,.15);color:#fff}
-.journey-steps{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;padding:12px}
-.journey-step{position:relative;min-width:0;min-height:132px;padding:13px 12px;border-radius:11px;border:1px solid transparent}
-.journey-step-head{display:flex;align-items:center;gap:9px;font-size:12.5px;line-height:1.3}
+.journey-section{margin:10px 0 16px;border:1px solid #d7e5f3;border-radius:14px;overflow:hidden;background:var(--surface);box-shadow:0 5px 16px rgba(6,47,84,.055)}
+.journey-heading{background:linear-gradient(100deg,#064b81,#1264a3);color:#fff;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:8px 15px;min-height:0}
+.journey-heading h3{color:#fff;font-size:15px;margin:0;line-height:1.25}
+.journey-heading>div:first-child{display:flex;align-items:center;flex-wrap:wrap;gap:5px 14px;min-width:0}.journey-kicker{font-size:10px;letter-spacing:.12em;font-weight:700;color:#b6e3fc;white-space:nowrap}
+.journey-formula{font-size:10.5px;font-weight:700;border-radius:40px;padding:4px 10px;background:rgba(255,255,255,.15);color:#fff}
+.journey-steps{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:9px;padding:10px}
+.journey-step{position:relative;min-width:0;min-height:0;padding:10px 11px;border-radius:10px;border:1px solid transparent}
+.journey-step-head{display:flex;align-items:center;gap:8px;font-size:12.5px;line-height:1.25}
 .journey-step-head b{color:#153c60;overflow-wrap:anywhere}
-.journey-step p{font-size:11px;line-height:1.5;color:#4d6375;margin:12px 0 0}
-.journey-number{width:30px;height:30px;flex:none;display:inline-flex;align-items:center;justify-content:center;color:#fff;background:var(--step-color);font-size:12px;font-weight:800;border-radius:50%}
+.journey-step p{font-size:11px;line-height:1.4;color:#4d6375;margin:6px 0 0}
+.journey-number{width:27px;height:27px;flex:none;display:inline-flex;align-items:center;justify-content:center;color:#fff;background:var(--step-color);font-size:11px;font-weight:800;border-radius:50%}
 .journey-data{--step-color:#1262bc;background:#edf6ff;border-color:#d4e9fe}
 .journey-shock{--step-color:#138451;background:#eefaf2;border-color:#d9eddf}
 .journey-cash{--step-color:#e28a11;background:#fff8e9;border-color:#ffebc3}
@@ -595,9 +595,9 @@ body{background:var(--bg);}
 .journey-notebox-assume h3{background:#e7f5ed;color:#146439}
 .journey-notebox-limits h3{background:#fcebed;color:#a0263c}
 .journey-notebox-message h3{background:#f0eafa;color:#57309d}
-.journey-compact .journey-steps{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;padding:10px}
-.journey-compact .journey-step{padding:10px;min-height:115px}
-.journey-compact .journey-step p{margin-top:7px}
+.journey-compact .journey-steps{grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;padding:10px}
+.journey-compact .journey-step{padding:10px 11px;min-height:0}
+.journey-compact .journey-step p{margin-top:6px}
 .journey-compact .journey-heading h3{font-size:14px}
 .mc-settings-accordion{border:1px solid var(--line);border-radius:9px;background:var(--surface-2);overflow:hidden}
 .mc-settings-accordion>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 15px;cursor:pointer;color:var(--heading);font-weight:700}
@@ -609,9 +609,9 @@ body{background:var(--bg);}
 .mc-sensitivity{margin:12px 0 2px}
 .mc-advanced{border:1px solid var(--line);border-radius:8px;padding:6px 12px}
 .mc-advanced>summary{padding:8px 0}
-@media(max-width:1150px){.journey-steps{grid-template-columns:repeat(3,minmax(0,1fr))}.journey-step{min-height:112px}}
-@media(max-width:720px){.journey-compact .journey-steps{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-notes{grid-template-columns:1fr}.journey-steps{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-step{min-height:120px}.journey-heading{padding:12px}.journey-formula{font-size:10px}}
-@media(max-width:435px){.journey-compact .journey-steps{grid-template-columns:1fr}.journey-steps{grid-template-columns:1fr}.journey-step{min-height:unset}.journey-step p{margin:5px 0 0}.mc-settings-accordion>summary small{max-width:130px;text-align:right}}
+@media(max-width:1150px){.journey-steps{grid-template-columns:repeat(3,minmax(0,1fr))}.journey-step{min-height:0}}
+@media(max-width:720px){.journey-compact .journey-steps{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-notes{grid-template-columns:1fr}.journey-steps{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-step{min-height:0}.journey-heading{padding:8px 12px}.journey-formula{font-size:10px}}
+@media(max-width:435px){.journey-compact .journey-steps{grid-template-columns:1fr}.journey-steps{grid-template-columns:1fr}.journey-step{min-height:0}.journey-step p{margin:5px 0 0}.mc-settings-accordion>summary small{max-width:130px;text-align:right}}
 :root[data-theme="dark"] .journey-section,:root[data-theme="dark"] .journey-step,:root[data-theme="dark"] .journey-notebox{background:var(--surface);border-color:var(--line)}
 :root[data-theme="dark"] .journey-step-head b{color:var(--ink)}
 :root[data-theme="dark"] .journey-step p{color:var(--ink-2)}
@@ -3752,7 +3752,7 @@ body{background:var(--bg);}
       H.zh = card("Z-EM distribution (final year)"); H.zh.body.append(legendRow([legendItem(LG.thrC, `Distress (${CFG.Z_DISTRESS_CUTOFF})`), legendItem(LG.thrW, `Safe (${CFG.Z_SAFE_CUTOFF})`)]), el("div", { class: "chart" }));
       H.zd = card("Zone distribution across simulations"); H.zd.body.append(el("div"));
       H.eh = card("Expected fiscal cost distribution (final year)"); H.eh.body.append(el("div", { class: "chart" }));
-      H.fan = card("Expected fiscal cost — percentile path"); H.fan.body.append(legendRow([legendItem(LG.med, "Median"), legendItem(LG.inner, "25th–75th"), legendItem(LG.outer, "5th–95th")]), el("div", { class: "chart" }));
+      H.fan = card("Expected fiscal cost — percentile path", "Y-axis is auto-scaled to projected values (not necessarily from zero) to show changes clearly."); H.fan.body.append(legendRow([legendItem(LG.med, "Median"), legendItem(LG.inner, "25th–75th"), legendItem(LG.outer, "5th–95th")]), el("div", { class: "chart" }));
       H.pt = card("Percentile summary · final year");
       H.mcCompare = card("PD model comparison", "Same simulated shocks, EAD and LGD · bars show P95 expected fiscal cost");
       // The model comparison belongs alongside the Monte Carlo output panels.
@@ -4094,7 +4094,7 @@ body{background:var(--bg);}
       H.fan.head.querySelector("h3").textContent = gs ? "Expected fiscal cost / GDP — percentile path" : `Expected fiscal cost — percentile path${CUR ? " (" + CUR + ")" : ""}`;
       const f = gs ? (v) => pctS(v) : (v) => money(v);
       lines(H.fan.body.lastChild, xs, [{ vals: pp.map((r) => r.p50), cls: "ln-med", dot: "now", label: "Median" }],
-        { band: [{ lo: pp.map((r) => r.p5), hi: pp.map((r) => r.p95), cls: "band-outer" }, { lo: pp.map((r) => r.p25), hi: pp.map((r) => r.p75), cls: "band-inner" }], zeroFloor: true, L: 62, yFmt: gs ? (t) => pctS(t) : (t, s) => moneyTick(t, s),
+        { band: [{ lo: pp.map((r) => r.p5), hi: pp.map((r) => r.p95), cls: "band-outer" }, { lo: pp.map((r) => r.p25), hi: pp.map((r) => r.p75), cls: "band-inner" }], zeroFloor: false, L: 70, yFmt: gs ? (t) => pctS(t) : (t, s) => moneyTick(t, s),
           tip: (i) => [[f(pp[i].p95), "95th"], [f(pp[i].p75), "75th"], [f(pp[i].p50), "median"], [f(pp[i].p25), "25th"], [f(pp[i].p5), "5th"]], xLab: (i) => (i === 0 ? `${xs[i]} base` : String(xs[i])) });
       H.pt.body.replaceChildren(simpleTable(["Percentile", "Z-EM", `EFC${CUR ? " (" + CUR + ")" : ""}`, ...(gF ? ["EFC / GDP"] : [])],
         [[0.05, "5th"], [0.25, "25th"], [0.5, "Median"], [0.75, "75th"], [0.95, "95th"]].map(([x, l]) => [l, fmt(q("Z_EM", x), 2), money(q("EFC", x)), ...(gF ? [pctS(q("EFC", x) / gF)] : [])]), { right: (i) => i >= 1 }),

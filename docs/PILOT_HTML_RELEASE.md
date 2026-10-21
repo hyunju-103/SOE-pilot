@@ -50,3 +50,12 @@ from observed SOE defaults. The displayed P95 EFC is the 95th percentile across 
 - The browser needs internet access for the optional World Bank reference lookup. Offline / API failures show an explanation and leave manual GDP entry accessible.
 - Tested in Chromium with mocked World Bank responses: country and year lookup, billions display, apply conversion, incompatible-currency rejection, compact switches and six Monte Carlo result panels; no page JavaScript exceptions.
 
+
+## Compact framework layout and percentile-path axis (2026-10-20)
+
+- Model Framework blue heading now uses a one-line title grouping with compact 8px vertical padding (approximately 40px total at desktop width).
+- All six framework cards use content-driven heights instead of fixed min-height. Both six-column Home and three-column/two-row Monte Carlo layouts are compact; tablet and mobile breakpoints also remove excessive min-height.
+- Monte Carlo EFC percentile path uses an automatically scaled Y axis rather than forcing zero, avoiding a nearly-flat line around high EFC values; the chart subtitle explicitly states the axis need not begin at zero.
+- Histogram Y axes continue showing counts, not monetary values, and are unchanged.
+- Tested in isolated Chromium layout at 1460px: Home 148px, compact Monte Carlo 212px, title band 40px in both. Inline JavaScript passed Node syntax checks. Full runtime Monte Carlo E2E test was inconclusive due browser timeout.
+
