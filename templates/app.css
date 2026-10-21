@@ -526,8 +526,26 @@ table.dict td { font-size: 12.5px; }
 }
 
 /* Monte Carlo model transparency: compact first, optional reference comparison */
-.mc-model-summary{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
-.mc-pill{display:inline-flex;padding:5px 9px;border:1px solid var(--line);border-radius:3px;background:var(--surface-2);color:var(--ink-2);font-weight:650;font-size:11.5px}
+/* Give the Monte Carlo method dropdown room to breathe. */
+.mc-pd-select{margin-bottom:18px}
+.mc-model-summary{display:flex;flex-wrap:wrap;align-items:center;column-gap:12px;row-gap:10px;margin:0 0 20px;padding:2px 0}
+.mc-pill{display:inline-flex;align-items:center;min-height:28px;padding:5px 11px;border:1px solid var(--line);border-radius:4px;background:var(--surface-2);color:var(--ink-2);font-weight:600;font-size:11.5px;line-height:1.4}
+/* Standalone accessible disclosure; never hides the simulation results. */
+.mc-settings-panel{padding:0;overflow:hidden}
+.mc-settings-toggle{display:flex;align-items:center;flex-wrap:wrap;column-gap:12px;row-gap:3px;padding:17px 48px 17px 18px;cursor:pointer;list-style:none;position:relative;user-select:none}
+.mc-settings-toggle::-webkit-details-marker{display:none}
+.mc-settings-toggle::after{content:"";position:absolute;right:22px;top:50%;width:9px;height:9px;border-right:2px solid var(--ink-2);border-bottom:2px solid var(--ink-2);transform:translateY(-65%) rotate(45deg);transition:transform .15s ease}
+.mc-settings-panel[open]>.mc-settings-toggle::after{transform:translateY(-30%) rotate(225deg)}
+.mc-settings-toggle:hover{background:var(--surface-2)}
+.mc-settings-toggle:focus-visible{outline:2px solid var(--accent-strong);outline-offset:-3px}
+.mc-settings-title{font-size:15px;font-weight:700;color:var(--heading)}
+.mc-settings-hint{font-size:12px;color:var(--muted);font-weight:400}
+.mc-settings-content{padding:18px;border-top:1px solid var(--line)}
+.mc-correlations-title{margin:16px 0 8px}
+.mc-settings-error:empty{display:none}
+.mc-settings-error:empty + .mcres{margin-top:0}
+@media(max-width:560px){.mc-settings-hint{width:100%}.mc-settings-toggle{padding-right:48px}}
+@media(prefers-reduced-motion:reduce){.mc-settings-toggle::after{transition:none}}
 .mc-advanced{margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
 .mc-advanced>summary{cursor:pointer;font-weight:650;color:var(--heading);padding:5px 0;user-select:none}
 .mc-advanced>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}

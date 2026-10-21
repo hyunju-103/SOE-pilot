@@ -1743,20 +1743,34 @@
         H.pdTable,
         el("p",{class:"note"},"The full logistic is a two-parameter curve and cannot exactly fit all 20 levels. The smooth anchored sensitivity is C1-continuous and exactly matches the reference rating PDs at their representative scores, but is not a single logistic. Neither has been validated against actual default histories."));
       const pdBox=card("PD model · Monte Carlo", "Full logistic is the default; the anchored smooth sensitivity is a different mathematical model. Both use identical shocks when compared.");
-      pdBox.body.append(H.mcMethodSelect, el("div",{class:"mc-model-summary"},
-        el("span",{class:"mc-pill"},"Full logistic · default"),el("span",{class:"mc-pill"},"EFC only"),
-        el("span",{class:"mc-pill"},"No actual default draws")),H.pdLead,H.pdSensitivity,more);
+      // The dropdown is the single source of truth for the selected PD model;
+      // keep method metadata separated from it, without a redundant 'default' badge.
+      pdBox.body.append(el("div", {class:"mc-pd-select"}, H.mcMethodSelect),
+        el("div",{class:"mc-model-summary",role:"note","aria-label":"Monte Carlo risk calculation scope"},
+          el("span",{class:"mc-pill"},"Expected fiscal cost only"),
+          el("span",{class:"mc-pill"},"No realised-default draws")),
+        H.pdLead,H.pdSensitivity,more);
       H.pdModel=pdBox;
       H.mcnote = el("p", { class: "note" });
-      H.mcerr = el("div");
-      const c = card("Monte Carlo settings", null, null); c.body.append(set, el("div", { class: "lbl", style: "margin:12px 0 6px" }, "Correlations between the drawn shocks"), corrBox, H.mcnote, H.mcerr);
+      // Native details keeps the controls keyboard-accessible and their values intact
+      // while collapsed; calculations and results continue updating independently.
+      const settingsSummary = el("summary",{class:"mc-settings-toggle"},
+        el("span",{class:"mc-settings-title"},"Monte Carlo settings"),
+        el("span",{class:"mc-settings-hint"},"Simulations · shock volatility · correlations"));
+      H.mcSettingsDetails=el("details",{class:"card mc-settings-panel"},
+        settingsSummary,
+        el("div",{class:"mc-settings-content"},
+          set,el("div",{class:"lbl mc-correlations-title"},"Correlations between the drawn shocks"),
+          corrBox,H.mcnote));
+      // Surface invalid correlation errors outside the collapsed settings panel.
+      H.mcerr = el("div", {class:"mc-settings-error"});
       H.zh = card("Z-EM distribution (final year)"); H.zh.body.append(legendRow([legendItem(LG.thrC, `Distress (${CFG.Z_DISTRESS_CUTOFF})`), legendItem(LG.thrW, `Safe (${CFG.Z_SAFE_CUTOFF})`)]), el("div", { class: "chart" }));
       H.zd = card("Zone distribution across simulations"); H.zd.body.append(el("div"));
       H.eh = card("Expected fiscal cost distribution (final year)"); H.eh.body.append(el("div", { class: "chart" }));
       H.fan = card("Expected fiscal cost — percentile path"); H.fan.body.append(legendRow([legendItem(LG.med, "Median"), legendItem(LG.inner, "25th–75th"), legendItem(LG.outer, "5th–95th")]), el("div", { class: "chart" }));
       H.pt = card("Percentile summary (final year)");
       H.mcres = el("div", { class: "stack" }, el("div", { class: "grid" }, el("div", { class: "s7" }, H.zh.root), el("div", { class: "s5" }, H.zd.root)), H.eh.root, H.fan.root, H.pt.root);
-      H.out.replaceChildren(H.pdModel.root, c.root, H.mcres);
+      H.out.replaceChildren(H.pdModel.root, H.mcSettingsDetails, H.mcerr, H.mcres);
     },
     buildAll() {
       const H = this.H;
@@ -2005,6 +2019,7 @@
       try {
         sims = E.monteCarlo(b, { ...p, mc_pd_method: (m.pdmodel || "logistic") }, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });
       } catch (e) {
+        H.mcSettingsDetails.open = true; // expose invalid correlations for correction
         H.mcerr.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, e.message));
         H.mcres.hidden = true;
         put(H.strip);

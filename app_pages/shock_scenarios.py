@@ -744,46 +744,45 @@ if view_mode == "Single scenario":
 # DISTRIBUTION (MONTE CARLO) VIEW
 # ===========================================================================
 else:
-    st.markdown(f'<div class="sfp-card"><div class="sfp-title">Monte Carlo settings {theme.info_icon(config.GLOSSARY["Monte Carlo simulation"])}</div>', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        n_sims = st.slider("Simulations", 100, 5000, config.MC_DEFAULT_SIMULATIONS, 100,
-                            help="How many random shock draws to run. More simulations give a smoother distribution but take longer to compute.")
-    with c2:
-        fuel_std = st.slider("Fuel shock std. dev.", 0.01, 0.30, config.MC_DEFAULT_FUEL_STD, 0.01,
-                              help="How much the fuel shock varies across simulations, centered on the Fuel tab's slider value. Higher = wider range of scenarios tested.")
-    with c3:
-        fx_std = st.slider("FX shock std. dev.", 0.01, 0.30, config.MC_DEFAULT_FX_STD, 0.01,
-                            help="How much the FX shock varies across simulations, centered on the FX tab's slider value.")
-    c4, c5 = st.columns(2)
-    with c4:
-        rate_std = st.slider("Interest-rate shock std. dev. (bps)", 0, 500, int(config.MC_DEFAULT_RATE_STD_BPS), 25,
-                             help="0 = the rate shock stays at the slider value in every simulation. Above 0, it is drawn too, centred on the slider value.")
-    with c5:
-        revenue_std = st.slider("Revenue shock std. dev. (standard deviations)", 0.0, 2.0, float(config.MC_DEFAULT_REVENUE_STD_SD), 0.1,
-                                help="0 = the revenue shock stays at the slider value. Above 0, it is drawn too, in units of this SOE's revenue-growth volatility.")
-    names = ["fuel", "fx"] + (["rate"] if rate_std > 0 else []) + (["revenue"] if revenue_std > 0 else [])
-    nice_name = {"fuel": "Fuel", "fx": "FX", "rate": "Interest rate", "revenue": "Revenue"}
-    pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]]
-    st.markdown('<p class="sfp-hint" style="margin-bottom:0"><b>Correlations between the drawn shocks</b> — placeholders until estimated from country data '
-                '(e.g. oil price ↑ → FX pressure → depreciation → rates ↑).</p>', unsafe_allow_html=True)
-    correlations = {}
-    corr_cols = st.columns(min(3, len(pairs)))
-    for k, (a, b) in enumerate(pairs):
-        with corr_cols[k % len(corr_cols)]:
-            correlations[f"{a}|{b}"] = st.slider(f"{nice_name[a]}–{nice_name[b]}", -1.0, 1.0,
-                                                  float(config.MC_DEFAULT_CORRELATIONS.get(f"{a}|{b}", 0.0)), 0.05, key=f"corr_{a}_{b}")
-    correlation = correlations["fuel|fx"]
-    st.markdown(
-        f'<p class="sfp-hint">Draws are centered on the shock sliders above '
-        + (f'(mean fuel shock = {fuel_shock_pct:.0%}, ' if not fuel_shock_path else
-           f'(mean fuel shock = {max(fuel_shock_path, key=abs):.0%}, the peak of the fuel price path, each draw rescaling the whole path; ')
-        + f'mean FX shock = {fx_shock_pct:.0%}'
-        + (f", mean rate shock = {rate_shock_bps:+.0f} bps" if rate_std > 0 else "")
-        + (f", mean revenue shock = {revenue_shock_std_devs:+.2f} s.d." if revenue_std > 0 else "")
-        + ') with the standard deviations set here; every other parameter stays at its slider value.</p>', unsafe_allow_html=True,
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
+    with st.expander("Monte Carlo settings · simulations, shock volatility and correlations", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            n_sims = st.slider("Simulations", 100, 5000, config.MC_DEFAULT_SIMULATIONS, 100,
+                                help="How many random shock draws to run. More simulations give a smoother distribution but take longer to compute.")
+        with c2:
+            fuel_std = st.slider("Fuel shock std. dev.", 0.01, 0.30, config.MC_DEFAULT_FUEL_STD, 0.01,
+                                  help="How much the fuel shock varies across simulations, centered on the Fuel tab's slider value. Higher = wider range of scenarios tested.")
+        with c3:
+            fx_std = st.slider("FX shock std. dev.", 0.01, 0.30, config.MC_DEFAULT_FX_STD, 0.01,
+                                help="How much the FX shock varies across simulations, centered on the FX tab's slider value.")
+        c4, c5 = st.columns(2)
+        with c4:
+            rate_std = st.slider("Interest-rate shock std. dev. (bps)", 0, 500, int(config.MC_DEFAULT_RATE_STD_BPS), 25,
+                                 help="0 = the rate shock stays at the slider value in every simulation. Above 0, it is drawn too, centred on the slider value.")
+        with c5:
+            revenue_std = st.slider("Revenue shock std. dev. (standard deviations)", 0.0, 2.0, float(config.MC_DEFAULT_REVENUE_STD_SD), 0.1,
+                                    help="0 = the revenue shock stays at the slider value. Above 0, it is drawn too, in units of this SOE's revenue-growth volatility.")
+        names = ["fuel", "fx"] + (["rate"] if rate_std > 0 else []) + (["revenue"] if revenue_std > 0 else [])
+        nice_name = {"fuel": "Fuel", "fx": "FX", "rate": "Interest rate", "revenue": "Revenue"}
+        pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]]
+        st.markdown('<p class="sfp-hint" style="margin-bottom:0"><b>Correlations between the drawn shocks</b> — placeholders until estimated from country data '
+                    '(e.g. oil price ↑ → FX pressure → depreciation → rates ↑).</p>', unsafe_allow_html=True)
+        correlations = {}
+        corr_cols = st.columns(min(3, len(pairs)))
+        for k, (a, b) in enumerate(pairs):
+            with corr_cols[k % len(corr_cols)]:
+                correlations[f"{a}|{b}"] = st.slider(f"{nice_name[a]}–{nice_name[b]}", -1.0, 1.0,
+                                                      float(config.MC_DEFAULT_CORRELATIONS.get(f"{a}|{b}", 0.0)), 0.05, key=f"corr_{a}_{b}")
+        correlation = correlations["fuel|fx"]
+        st.markdown(
+            f'<p class="sfp-hint">Draws are centered on the shock sliders above '
+            + (f'(mean fuel shock = {fuel_shock_pct:.0%}, ' if not fuel_shock_path else
+               f'(mean fuel shock = {max(fuel_shock_path, key=abs):.0%}, the peak of the fuel price path, each draw rescaling the whole path; ')
+            + f'mean FX shock = {fx_shock_pct:.0%}'
+            + (f", mean rate shock = {rate_shock_bps:+.0f} bps" if rate_std > 0 else "")
+            + (f", mean revenue shock = {revenue_shock_std_devs:+.2f} s.d." if revenue_std > 0 else "")
+            + ') with the standard deviations set here; every other parameter stays at its slider value.</p>', unsafe_allow_html=True,
+        )
 
     mc_method = st.radio("Monte Carlo PD model", ["logistic", "rating_smooth"], horizontal=True,
                          format_func=lambda x: {"logistic":"Full logistic (default)","rating_smooth":"Smooth rating-anchored (sensitivity)"}[x],
