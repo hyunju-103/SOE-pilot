@@ -59,3 +59,11 @@ from observed SOE defaults. The displayed P95 EFC is the 95th percentile across 
 - Histogram Y axes continue showing counts, not monetary values, and are unchanged.
 - Tested in isolated Chromium layout at 1460px: Home 148px, compact Monte Carlo 212px, title band 40px in both. Inline JavaScript passed Node syntax checks. Full runtime Monte Carlo E2E test was inconclusive due browser timeout.
 
+
+## Report export restoration (2026-10-20)
+
+- Corrected the embedded, tracked standalone HTML metadata from `allow_download:false` to `allow_download:true`, restoring conditional export actions within the Streamlit iframe.
+- Restored and clarified the Report tab action as **Print / save full report as PDF**. It invokes the browser print dialog for all five Report sections: Executive Summary, Financial Performance, Distress and Fiscal Risk, Stress Tests, and Policy Implications. The user chooses **Save as PDF**; this is browser printing rather than an automatically generated/downloaded binary PDF.
+- The same permission flag also restores CSV export controls where provided by the UI.
+- No model formulas, PD calibration, chart layouts, source data or header palette were modified.
+- All inline JavaScript blocks passed `node --check`. UI smoke testing inside this environment's Chromium was blocked/time-limited, so success of browser print dialogs in Streamlit Cloud must be confirmed on the deployed site.
