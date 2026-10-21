@@ -19,16 +19,25 @@ Published interactive snapshot: `SOE-Fiscal-Risk-Final.html` (header restored to
 `Home.py` reads the tracked standalone HTML snapshot if present, and passes it to `components.html`.
 It retains `report.build_app_data()/render_html()` as a fallback if that file is absent.
 The deployed pilot UI therefore uses this exact reviewed HTML snapshot rather than
-silently rebuilding an older version from the Python templates.
+silently rebuilding it at run time.
 
-**Maintenance note:** `templates/` and `config.py` have not been synchronized with
-this reviewed HTML snapshot. Rebuilding via `report.py` alone may yield a different
-UI / calibration. Until sources are synchronized, update and review
-`SOE-Fiscal-Risk-Final.html` for the published pilot interface.
+**Maintenance rule:** `templates/` and `config.py` are synchronised with the published
+snapshot, which is a build product. Edit `templates/` or `config.py`, rebuild with the
+release command below, and commit the regenerated HTML together with the source change.
+Never hand-edit `SOE-Fiscal-Risk-Final.html`.
+
+Release command (run from the repository root):
+
+```
+python report.py --demo --allow-download --out SOE-Fiscal-Risk-Final.html
+```
+
+`tests/check_snapshot_sync.py` rebuilds the page in memory with these settings and fails if
+it differs from the tracked file (only `meta.generated`, the build date, is ignored).
 
 ## Checks
 
-- HTML file content checksum (git blob SHA): `7a5ef140b36c1725b54be1372771fbc16e217a70`.
+- Snapshot integrity: run `python tests/check_snapshot_sync.py` (rebuild equals the tracked HTML, apart from the build date).
 - Inline executable JavaScript passed `node --check`; JSON data scripts excluded from JS syntax checking.
 - The navy title/header and expected-fiscal-cost-only simulation controls were inspected.
 - Actual Streamlit Cloud deployment status and numerical model validation are separate checks.

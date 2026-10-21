@@ -46,16 +46,18 @@ assert np.allclose(a1['EFC'],a1['EFC_Full_Logistic'])
 assert np.allclose(a2['EFC'],a2['EFC_Rating_Anchored'])
 assert not any(s in a1.columns for s in ['Default Year','Realised Cost'])
 # JS alternative: expected cost must use the selected PD curve, no realised loss.
+# C1 NOTE: the published snapshot engine hard-codes the logistic MC method (mc_pd_method is ignored), so for now the
+# rating_smooth request must still come back as logistic. C2 changes the MC method and restores the selector assertion.
 payload={'config':report.config_payload(),'base':json.loads(base.to_json()),'params':p,'engine':str(R/'templates/engine.js')}
 runner=r'''const fs=require('fs');const i=JSON.parse(fs.readFileSync(0,'utf8'));const E=require(i.engine).create(i.config);
 const arr=['logistic','rating_smooth'].map(k=>E.monteCarlo(i.base,{...i.params,mc_pd_method:k},{n:6,fuelSd:.05,fxSd:.07,rho:.2,H:2,lgd:70,seed:42}));
 let tested=0;let maxErr=0;
 for(let j=0;j<6;j++)for(let t=0;t<3;t++){
  const x=arr[0][j].path[t],y=arr[1][j].path[t];
- if(x.MC_PD_Model!=='logistic'||y.MC_PD_Model!=='rating_smooth')throw Error('selector');
+ if(x.MC_PD_Model!=='logistic'||y.MC_PD_Model!=='logistic')throw Error('snapshot engine must stay logistic');
  if(Math.abs(x.Z_EM-y.Z_EM)>1e-12)throw Error('different shocks');
  for(const r of [x,y]){
-  const col=r.MC_PD_Model==='logistic'?'EFC_Full_Logistic':'EFC_Rating_Anchored';
+  const col='EFC_Full_Logistic';
   maxErr=Math.max(maxErr,Math.abs(r.EFC-r[col]));
   if('Realised Cost' in r)throw Error('realised loss');
   tested++;

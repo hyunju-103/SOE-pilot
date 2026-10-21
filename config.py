@@ -425,8 +425,8 @@ DEFAULT_CASH_SETTINGS = {
     # probability of distress on the Shock Scenarios page
     "pd_method": "rating",              # "rating" (band PD, max 40%), "rating_tail" (bands, then a logistic tail below the D threshold),
                                         # "logistic" (PD = 1 / (1 + exp(-(a + b Z))) everywhere) or "user" (a fixed annual PD)
-    "pd_logit_a": -2.18031828,                # bounded minimax reference-PD calibration (illustrative; see docs/PD_CALIBRATION.md)
-    "pd_logit_b": -1.10613960,                # bounded minimax reference-PD calibration (illustrative)
+    "pd_logit_a": -2.02276962,                # minimax reference-PD calibration, uncapped (illustrative; see docs/PD_CALIBRATION.md)
+    "pd_logit_b": -0.89133626,                # minimax reference-PD calibration, uncapped (illustrative)
     "pd_user": 0.10,                    # annual PD when pd_method = "user"
     "pd_on_default": 1.0,               # PD in a year with debt service unpaid (1 = the default has happened; 0.40 = the D band)
     # Refinancing (separate assumption, off by default): short-term bank debt replaced
@@ -439,6 +439,20 @@ DEFAULT_CASH_SETTINGS = {
     # Emergency government support: new borrowing stops where total liabilities /
     # total assets would pass this cap and the State injects the rest. 0 = no cap.
     "borrowing_cap_debt_to_assets": 0.0,
+}
+
+# Provenance of the logistic PD coefficients above (shown in the PD-model panel of the HTML tool).
+# Reproduce with `python scripts/calibrate_pd.py`; old_a / old_b are the earlier capped fit (`--caps`).
+PD_CALIBRATION_META = {
+    "fit": "minimax_absolute_pd_deviation",
+    "anchor_count": 20,
+    "reference": "illustrative 20-level rating PD table",
+    "objective": "minimize maximum absolute PD error (percentage points) at reference band representative Z-EM anchors",
+    "status": "scenario calibration; not an empirically validated default forecast",
+    "old_a": -2.18031828,
+    "old_b": -1.1061396,
+    "a": DEFAULT_CASH_SETTINGS["pd_logit_a"],
+    "b": DEFAULT_CASH_SETTINGS["pd_logit_b"],
 }
 
 # "Cash waterfall" button on the Shock Scenarios page: switches the priority of
@@ -961,11 +975,9 @@ PARAMETER_REGISTER = [
     _p("Tariffs and collections", "Demand growth and losses", "0% / 0%", "user",
        "Macro drivers in the task team review; demand growth scales sales and cash costs together, losses cut customer revenue at the same cost", "Shock Scenarios"),
     _p("Probability of distress", "PD method", f"{DEFAULT_CASH_SETTINGS['pd_method']}; logistic a {DEFAULT_CASH_SETTINGS['pd_logit_a']}, b {DEFAULT_CASH_SETTINGS['pd_logit_b']}", "placeholder",
-       "Comment by H. Hiro (Oct 2026): PD should keep rising beyond 40% as distress deepens. Rating bands (cap 40%); rating bands with a logistic tail "
-       "anchored at 40% at the D threshold; logistic 1/(1+e^−(a+bZ)); or a user PD. a and b to be calibrated (country defaults, agency curves or a "
-       "judgement anchor)", "Shock Scenarios"),
-    _p("Probability of distress", "Monte Carlo expected fiscal cost", "Full logistic PD; no default draws", "design",
-       "Full logistic PD is calculated from each simulated year’s Z-EM and EFC = PD × EAD × LGD. No default events or realised losses are simulated. Missed debt service does not override the Monte Carlo logistic PD.", "Shock Scenarios (Monte Carlo)"),
+       "Calibrated to minimize the maximum absolute percentage-point deviation at the 20 reference rating midpoint anchors; illustrative reference PDs, not realized SOE defaults.", "Shock Scenarios"),
+    _p("Probability of distress", "Monte Carlo expected fiscal cost", "Full logistic PD fixed as core model; smooth rating-anchored sensitivity only; no default-event draws", "design",
+       "Monte Carlo outputs use logistic PD = sigmoid(a+b×Z-EM) for EFC=PD×EAD×LGD; rating-anchored only for side-by-side same-draw comparison; no simulated defaults or realised loss payouts.", "Shock Scenarios (Monte Carlo)"),
     _p("Fuel policy and cash", "IPP purchases, share of operating expense", f"{DEFAULT_CASH_SETTINGS['ipp_cost_share']:.0%} (oil preset {OIL_SHOCK_PRESET['ipp_cost_share']:.0%})", "proxy",
        "SENELEC 2022: purchased electricity ≈ COGS 647.4 bn − fuel 494.9 bn = 152.5 bn, / operating expense 888.5 bn; includes OMVS and imports, "
        "so an upper bound for IPPs alone. Used only to size tier 1 of the waterfall", "Shock Scenarios"),

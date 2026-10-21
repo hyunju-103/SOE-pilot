@@ -653,9 +653,9 @@
      *  o: {n, fuelSd, fxSd, rho, rateSd, revSd, correlations, H, lgd, gdp, seed, eadShare}. With only fuel and FX
      *  drawn, the draws are the same as the original two-variable version for the same seed. */
     function monteCarlo(base, p, o) {
-      // Default full logistic model; optional rating-anchored sensitivity.
-      const mcMethod=p.mc_pd_method || "logistic";
-      if(!["logistic","rating_smooth"].includes(mcMethod)) throw new Error("Invalid MC PD method");
+      // The principal Monte Carlo PD is always the full logistic curve.
+      // The rating-anchored curve is evaluated ONLY as same-draw sensitivity.
+      const mcMethod="logistic";
       const mcP = Object.assign({}, p, { pd_method: mcMethod, pd_override_on_missed_service: false });
       const g = rng(o.seed ?? 42), sims = [], n = o.n, H = o.H;
       const corrs = Object.assign({}, o.correlations || {});
