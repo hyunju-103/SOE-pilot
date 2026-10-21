@@ -38,3 +38,15 @@ UI / calibration. Until sources are synchronized, update and review
 The logistic calibration is illustrative and tied to reference rating PDs, **not** estimated
 from observed SOE defaults. The displayed P95 EFC is the 95th percentile across simulated
 *expected* costs, **not** an observed government payout or a quantile of realised losses.
+
+## Monte Carlo, GDP lookup and compact controls (2026-10-20)
+
+- Monte Carlo results use a six-card, two-column arrangement (percentile path and zones; EFC and Z-EM distributions; PD comparison and percentile summary).
+- Cash waterfall and missed-debt-service switches now give conditional effect explanations. The latter is a single-scenario sensitivity and does not override Monte Carlo logistic PD.
+- Compact On/Off controls no longer stretch to the entire column; the Monte Carlo disclosure is also slimmer.
+- GDP reference lookup: user chooses country and base year, and the browser queries World Bank WDI `NY.GDP.MKTP.CN` (GDP, current local currency, source=2) live. It never invents missing years or an FX conversion.
+- GDP unit selector supports financial-statement units, full LCU, thousands, millions and billions. Results are divided by the uploaded statement unit multiplier before entering the shared GDP state, retaining consistent EFC/GDP ratios.
+- Apply GDP is an explicit action. Country currency mismatches and reference-year mismatches prevent auto-apply; unknown currency matches require explicit confirmation; the manually entered GDP field remains available.
+- The browser needs internet access for the optional World Bank reference lookup. Offline / API failures show an explanation and leave manual GDP entry accessible.
+- Tested in Chromium with mocked World Bank responses: country and year lookup, billions display, apply conversion, incompatible-currency rejection, compact switches and six Monte Carlo result panels; no page JavaScript exceptions.
+
