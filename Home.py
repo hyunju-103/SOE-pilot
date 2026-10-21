@@ -8,15 +8,16 @@ Home, Report, KPI Dashboard, Altman Z-EM, Expected Fiscal Cost, Shock
 Scenarios, Government Support, Early Warning and Assumptions & sources, with
 the demo portfolio loaded and an upload box for your own CSV/Excel file.
 
-The page is built by report.py from templates/ (app.html, app.css, app.js,
-engine.js) and every number in config.py; the calculations run in the
-viewer's browser with the same formulas as calculations.py / shocks.py
-(checked by tests/check_engine_parity.py). Uploaded files are read in the
-browser and are not sent to the server.
+The currently published UI is the reviewed standalone
+SOE-Fiscal-Risk-Final.html (preferred when present); report.py/templates
+remain the fallback generator. Browser-side calculations run in the
+embedded HTML and uploads are not sent to the server.
 
 The Python-rendered multipage version is still available:
     streamlit run classic.py
 """
+
+from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -44,8 +45,14 @@ st.markdown(
 )
 
 
-@st.cache_data(show_spinner=False)
 def tool_page() -> str:
+    # Publish the reviewed, self-contained dashboard as the actual pilot UI.
+    # Keep report.py as the fallback for source-based rebuilding.
+    # Read on each Streamlit rerun so HTML-only deployments never serve a stale cache.
+    release_html = Path(__file__).with_name("SOE-Fiscal-Risk-Final.html")
+    if release_html.is_file():
+        return release_html.read_text(encoding="utf-8")
+
     app = report.build_app_data(
         data_loader.demo_portfolio(),
         data_label="Illustrative demo portfolio: 8 invented SOEs",
