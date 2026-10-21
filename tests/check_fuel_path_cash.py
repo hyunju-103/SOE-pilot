@@ -25,6 +25,7 @@ cash-first financing in shocks.run_scenario.
 """
 
 import math
+import os
 import subprocess
 import sys
 import types
@@ -61,9 +62,13 @@ def same(a, b):
 
 
 def head_engine():
-    """shocks.py as of BASE_COMMIT, or None when git is unavailable."""
+    """shocks.py as of BASE_COMMIT, or None when that commit cannot be read.
+
+    BASE_COMMIT is not in this repository; point SOE_BASELINE_REPO at a clone of
+    hyunju-103/SOE (read-only use: only `git show`) to run the comparison."""
+    repo = os.environ.get("SOE_BASELINE_REPO") or str(ROOT)
     try:
-        src = subprocess.run(["git", "-C", str(ROOT), "show", f"{BASE_COMMIT}:shocks.py"],
+        src = subprocess.run(["git", "-C", repo, "show", f"{BASE_COMMIT}:shocks.py"],
                              capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -140,7 +145,8 @@ def main():
     old = head_engine()
     n_draw = 0
     if old is None:
-        print("git not available — skipping the bit-exact comparison with", BASE_COMMIT)
+        print(f"commit {BASE_COMMIT} not in this repository; set SOE_BASELINE_REPO=<path to a clone of "
+              "hyunju-103/SOE> to run the bit-exact comparison (skipped)")
     else:
         def compare(tag, a, b):
             nonlocal n
@@ -181,9 +187,15 @@ def main():
         p = params_for(base, std)
         a = shocks.run_monte_carlo(base, p, n_sims=200, fuel_std=0.10, fx_std=0.08, correlation=0.3, horizon_years=3, lgd_pct=70)
         b = old.run_monte_carlo(base, p, n_sims=200, fuel_std=0.10, fx_std=0.08, correlation=0.3, horizon_years=3, lgd_pct=70)
-        for c in ["fuel_shock_pct", "fx_shock_pct", "Z_EM", "EFC"]:
+        # Since 26ab06a the MC forces its own PD method (default rating_smooth) and no missed-service
+        # override, so its EFC column is no longer the deterministic band-PD EFC that 064ac24 reports.
+        # Compare the draws and Z-EM directly, and EFC after rebuilding the 064ac24 definition from the
+        # new run's own Z-EM / rating / debt-default / EAD / LGD (band PD, missed-service override on).
+        a_ref = shocks.add_cost(a, 70, 1.0, dict(p, pd_method="rating", pd_override_on_missed_service=True))
+        for c, x_col in [("fuel_shock_pct", a["fuel_shock_pct"]), ("fx_shock_pct", a["fx_shock_pct"]),
+                         ("Z_EM", a["Z_EM"]), ("EFC", a_ref["EFC"])]:
             n += 1
-            if not all(same(x, y) for x, y in zip(a[c], b[c])):
+            if not all(same(x, y) for x, y in zip(x_col, b[c])):
                 fails.append(f"2d Monte Carlo {c} differs from {BASE_COMMIT}")
 
     # 3. path [p]*D + [0]*(H-D) == step of magnitude p for D years
