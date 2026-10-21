@@ -112,6 +112,7 @@ import numpy as np
 import pandas as pd
 
 import config
+from pd_curves import anchored_pd
 from calculations import classify_zem_from_values, compute_pd, compute_pd_from_rating
 
 
@@ -152,7 +153,7 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         "ArrIPP": 0.0, "ArrFuel": 0.0, "ArrDebt": 0.0, "ArrOps": 0.0, "Reserve": 0.0,
         "ArrStat": 0.0, "ArrFloor": 0.0, "ArrJun": 0.0, "StateShortfall": 0.0, "CustArrears": 0.0,
         # snapshot rules: a year with debt service unpaid is rated D; share of the State receivable in current assets
-        "DefaultRule": _num(params.get("default_on_missed_debt"), 1.0) > 0,
+        "DefaultRule": _num(params.get("default_on_missed_debt"), 0.0) > 0,
         "RecvCurrent": min(1.0, max(0.0, _num(params.get("receivable_current_share"), 1.0))),
     }
 
@@ -519,7 +520,9 @@ def pd_value(z, rating, debt_default, params=None) -> float:
         return min(1.0, max(0.0, _num(p.get("pd_user"), 0.10)))
     b = _num(p.get("pd_logit_b"), -1.17)
     if method == "logistic":
-        return _logistic(_num(p.get("pd_logit_a"), -2.18) + b * z) if np.isfinite(z) else float("nan")
+        return _logistic(_num(p.get("pd_logit_a"), config.DEFAULT_CASH_SETTINGS["pd_logit_a"]) + b * z) if np.isfinite(z) else float("nan")
+    if method == "rating_smooth":
+        return anchored_pd(z)
     if method == "rating_tail" and np.isfinite(z) and z < _Z_D:
         return _logistic(np.log(_PD_D / (1.0 - _PD_D)) + b * (z - _Z_D))
     return compute_pd_from_rating(rating)
@@ -707,10 +710,13 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
     two-variable version for the same seed.
     Returns a LONG-format DataFrame — one row per (simulation, year),
     containing expected costs only (no random default events or realised losses)."""
-    # John (Oct 2026): full logistic for every Monte Carlo Z-EM, EFC only.
-    # Missed debt service still affects financials and Z-EM, but cannot force
-    # PD to 100% (that would reintroduce a discontinuity).
-    params = dict(params, pd_method="logistic", pd_override_on_missed_service=False)
+    # Comparison on identical Monte Carlo shocks. Full logistic is the default
+    # for the default model specification; rating_smooth is an explicitly labelled
+    # alternative that matches the rating reference anchor PDs.
+    mc_method = str(params.get("mc_pd_method") or "logistic")
+    if mc_method not in ("logistic", "rating_smooth"):
+        raise ValueError("mc_pd_method must be logistic or rating_smooth")
+    params = dict(params, pd_method=mc_method, pd_override_on_missed_service=False)
     rng = np.random.default_rng(seed)
     corrs = dict(correlations) if correlations else {}
     corrs.setdefault("fuel|fx", correlation)
@@ -752,6 +758,12 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
         for n in names:
             scenario[{"fuel": "fuel_shock_pct", "fx": "fx_shock_pct", "rate": "rate_shock_bps", "revenue": "revenue_shock_std_devs"}[n]] = drawn[n]
         scenario = add_cost(scenario, lgd_pct, ead_share, params)
+        # Same shock, balance sheet, EAD and LGD; alternate cost has no extra random draw.
+        scenario["PD_Full_Logistic"] = [pd_value(z, r, False, dict(params, pd_method="logistic")) for z,r in zip(scenario["Z_EM"],scenario["Rating"])]
+        scenario["PD_Rating_Anchored"] = [anchored_pd(z) for z in scenario["Z_EM"]]
+        scenario["EFC_Full_Logistic"] = scenario["PD_Full_Logistic"] * scenario["EAD"] * scenario["LGD"]
+        scenario["EFC_Rating_Anchored"] = scenario["PD_Rating_Anchored"] * scenario["EAD"] * scenario["LGD"]
+        scenario["MC_PD_Model"] = mc_method
         all_rows.append(scenario)
 
     return pd.concat(all_rows, ignore_index=True)

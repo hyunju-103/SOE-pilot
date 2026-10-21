@@ -186,14 +186,16 @@ def main():
     g = run(-400.0, dict(wf, late_rate_priority=0.12, late_rate_debt=0.15), H=2)
     check("7 priority and debt", g["Late-payment Interest"].iloc[2], 0.12 * 190.0 + 0.15 * 40.0)
 
-    # 8. missed debt service = default
-    g = shocks.add_cost(run(-250.0, wf, H=2), 70, 1.0, wf)
+    # 8. missed debt service can be treated as a rating/default sensitivity ONLY if explicitly enabled.
+    # Default behavior is off: unpaid debt service remains a liquidity failure, not a realised default.
+    wf_default = dict(wf, default_on_missed_debt=1.0)
+    g = shocks.add_cost(run(-250.0, wf_default, H=2), 70, 1.0, wf_default)
     check("8 debt arrears", g["Missed Debt Service"].iloc[1], 40.0)
     check("8 rated D", g["Rating"].iloc[1], "D")
     check("8 default flag", g["Debt Default"].iloc[1], 1.0)
     check("8 PD on default", g["PD"].iloc[1], 1.0)
     check("8 EFC = EAD x LGD", g["EFC"].iloc[1], g["Total Liabilities"].iloc[1] * 0.7)
-    check("8 PD on default 40%", shocks.add_cost(run(-250.0, wf), 70, 1.0, dict(wf, pd_on_default=0.4))["PD"].iloc[1], 0.4)
+    check("8 PD on default 40%", shocks.add_cost(run(-250.0, wf_default), 70, 1.0, dict(wf_default, pd_on_default=0.4))["PD"].iloc[1], 0.4)
     g = run(-250.0, dict(wf, default_on_missed_debt=0.0))
     check("8 off: no flag", g["Debt Default"].iloc[1], 0.0)
     check("8 off: Z-EM rating", g["Rating"].iloc[1], next(r for lo, hi, r, _ in config.Z_RATING_TABLE if lo <= g["Z_EM"].iloc[1] < hi))
@@ -317,7 +319,7 @@ def main():
     check("15 default overrides", shocks.pd_value(3.0, "BBB+", True, {"pd_method": "user", "pd_user": 0.07}), 1.0)
     check("15 cumulative PD", shocks.cumulative_pd([0.1, 0.2, float("nan"), 0.5]), 1 - 0.9 * 0.8 * 0.5)
 
-    # 16. John's final Monte Carlo: full logistic EFC only, no default draws.
+    # 16. Final Monte Carlo: full logistic EFC only, no default draws.
     r = demo[0][1]
     q = params_for(r, dict(oil, pd_method="user", pd_user=0.1, pd_on_default=1.0))
     kw = dict(n_sims=100, fuel_std=0.1, fx_std=0.08, correlation=0.3, horizon_years=5, lgd_pct=70, seed=42)

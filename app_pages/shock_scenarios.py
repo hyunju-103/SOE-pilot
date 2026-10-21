@@ -409,7 +409,7 @@ with gc2:
     )
 with gc3:
     gdp_growth = st.slider("Assumed nominal GDP growth (%/yr)", -5.0, 15.0, config.DEFAULT_GDP_GROWTH * 100, 0.5) / 100.0
-_pdm = {"rating": "Rating bands (at most 40%)", "rating_tail": "Rating bands with a logistic tail (above 40%)", "logistic": "Logistic in Z-EM", "user": "User-specified"}
+_pdm = {"rating": "Rating bands (at most 40%)", "rating_tail": "Rating bands with a logistic tail (above 40%)", "logistic": "Logistic in Z-EM", "rating_smooth": "Smooth rating-anchored (C1; sensitivity)", "user": "User-specified"}
 pc1, pc2, pc3 = st.columns(3)
 with pc1:
     pd_method = st.selectbox("Probability of default (PD)", list(_pdm), format_func=_pdm.get,
@@ -785,7 +785,11 @@ else:
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.info(f"Monte Carlo (expected fiscal cost only): full logistic PD = sigmoid(a + b × Z-EM), a={pd_logit_a:.3f}, b={pd_logit_b:.3f}. Each simulated year uses EFC = PD × EAD × LGD. No realised-default draws are performed; missed debt service cannot override the Monte Carlo logistic PD. The selected PD method above applies to single-scenario views only.")
+    mc_method = st.radio("Monte Carlo PD model", ["logistic", "rating_smooth"], horizontal=True,
+                         format_func=lambda x: {"logistic":"Full logistic (default)","rating_smooth":"Smooth rating-anchored (sensitivity)"}[x],
+                         help="The default PD model is a single sigmoid(a+b*Z). The alternative is a monotone C1 logit-spline matching all 20 reference PD anchors, not a single logistic.")
+    params["mc_pd_method"] = mc_method
+    st.info(f"Monte Carlo EFC only: {'Full logistic' if mc_method=='logistic' else 'Smooth rating-anchored sensitivity'} PD, same Monte Carlo shock paths for the comparison. Full logistic a={pd_logit_a:.6f}, b={pd_logit_b:.6f}. EFC = PD × EAD × LGD; no actual-default draws, and missed debt service cannot override Monte Carlo PD. The single-scenario PD selector above is separate.")
     try:
         with st.spinner(f"Running {n_sims} simulations..."):
             mc = shocks.run_monte_carlo(base_row, params, n_sims=n_sims, fuel_std=fuel_std, fx_std=fx_std,
@@ -799,16 +803,24 @@ else:
     mc_final = mc[mc["Projection Year"] == horizon_years]
     p50_efc = mc_final["EFC"].quantile(0.50)
     p95_efc = mc_final["EFC"].quantile(0.95)
+    with st.expander("PD model sensitivity · same Monte Carlo shock draws", expanded=True):
+        comp = []
+        for label, col in [("Full logistic", "EFC_Full_Logistic"),
+                           ("Smooth rating-anchored", "EFC_Rating_Anchored")]:
+            comp.append({"Model":label, "Median expected fiscal cost": mc_final[col].median(),
+                         "P95 expected fiscal cost": mc_final[col].quantile(0.95)})
+        st.dataframe(pd.DataFrame(comp),hide_index=True,use_container_width=True)
+        st.caption("These are percentiles of EFC, not percentiles of realised government payments; the comparison reuses exactly the same simulated financial paths.")
     pct_distress = (mc_final["Zone"] == "Distress").mean()
     gdp_final = shocks.gdp_path(base_gdp, gdp_growth, horizon_years)[-1] if base_gdp else None
 
     _yr = int(mc_final["Calendar Year"].iloc[0])
     theme.stat_strip([
         theme.tile(f"Median EFC, year {horizon_years}", ov.money(p50_efc, _scale), _cur, f"{sel_entity} · {n_sims:,} simulations"),
-        theme.tile("Fiscal-at-risk (p95)", ov.money(p95_efc, _scale), _cur, "Bad but plausible: 1 in 20 draws is worse"),
+        theme.tile("P95 of expected fiscal cost", ov.money(p95_efc, _scale), _cur, "Top 5% of shock paths have higher expected cost; not realised payout"),
         theme.tile("Ending in distress", f"{pct_distress:.0%}", "", f"of simulations, Z-EM ≤ {config.Z_DISTRESS_CUTOFF} in {_yr}",
                    status="alert" if pct_distress > 0.5 else "watch" if pct_distress > 0 else "ok"),
-        theme.tile("Fiscal-at-risk / GDP", ov.pct_small(p95_efc / gdp_final) if gdp_final else "—", "",
+        theme.tile("P95 expected fiscal cost / GDP", ov.pct_small(p95_efc / gdp_final) if gdp_final else "—", "",
                    f"GDP in {_yr}: {ov.money(gdp_final, _scale)}" if gdp_final else "Enter GDP above"),
     ], container=strip_box)
 

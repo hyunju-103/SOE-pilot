@@ -409,7 +409,7 @@ DEFAULT_CASH_SETTINGS = {
     "late_rate_priority": 0.0,          # late-payment interest on arrears to IPPs and fuel suppliers (PPA penalty rate)
     "late_rate_debt": 0.0,              # default interest on missed debt service
     "late_rate_other": 0.0,             # late-payment interest on statutory, own-operations and junior arrears
-    "default_on_missed_debt": 1.0,      # 1 = a year with debt service unpaid is rated D (PD of the D band)
+    "default_on_missed_debt": 0.0,      # Off by default: an unpaid debt-service amount is not itself a realised default; optional single-scenario sensitivity
     # behaviour under the waterfall
     "priority_discount": 0.0,           # price cut on fuel and IPP bills that priority creditors grant in return
     "state_paid_uplift": 0.0,           # points added to the State's in-year payment shares once the waterfall runs
@@ -425,8 +425,8 @@ DEFAULT_CASH_SETTINGS = {
     # probability of distress on the Shock Scenarios page
     "pd_method": "rating",              # "rating" (band PD, max 40%), "rating_tail" (bands, then a logistic tail below the D threshold),
                                         # "logistic" (PD = 1 / (1 + exp(-(a + b Z))) everywhere) or "user" (a fixed annual PD)
-    "pd_logit_a": -1.92665108,                # weighted PD-scale calibration to current rating cohort table (see docs/PD_CALIBRATION.md)
-    "pd_logit_b": -0.88741214,                # weighted PD-scale calibration (see docs/PD_CALIBRATION.md)
+    "pd_logit_a": -2.18031828,                # bounded minimax reference-PD calibration (illustrative; see docs/PD_CALIBRATION.md)
+    "pd_logit_b": -1.10613960,                # bounded minimax reference-PD calibration (illustrative)
     "pd_user": 0.10,                    # annual PD when pd_method = "user"
     "pd_on_default": 1.0,               # PD in a year with debt service unpaid (1 = the default has happened; 0.40 = the D band)
     # Refinancing (separate assumption, off by default): short-term bank debt replaced

@@ -1,35 +1,26 @@
-# Monte Carlo full-logistic PD calibration (October 2026)
+# Two-parameter full-logistic PD calibration · 20 October 2026
 
-## Decision implemented
+**Primary model specification:** `PD(Z)=sigmoid(a+bZ)`, **a = -2.18031828**, **b = -1.10613960**. This is an illustrative constrained *minimax* fitting rule for the 20 reference rating PDs, not an empirically validated default model. Refit with `python scripts/calibrate_pd.py --refit` (`scipy` required).
 
-- **Monte Carlo:** full logistic PD for **every** simulated Z-EM, not rating jumps and not a rating-plus-tail hybrid. Both the Python Streamlit and the JavaScript/HTML Monte Carlo paths enforce this, regardless of the deterministic scenario PD selector.
-- **Single scenarios:** original choices and original default rating method are preserved. The Expected Fiscal Cost tab is unchanged.
-- **Expected fiscal risk only (John's follow-up):** Bernoulli default draws and realised-loss outputs are removed from the Monte Carlo computation, dashboard and exports; outcomes remain expected fiscal cost, not realisations. A missed debt-service flag affects financial state but does **not** override Monte Carlo logistic PD with 100%.
+## Reproducible objective
 
-## Formula and calibration
+Take each rating's finite Z-EM band midpoint; AAA=4.90, D=-1.50. Find parameters a,b,t minimizing **t**, such that `abs(sigmoid(a+b*z_i)-PD_i) <= t` for every one of the 20 ratings, `b <= -0.01`, and `sigmoid(a+b*z_AAA) <= 2.5 * PD_AAA`, `sigmoid(a+b*z_BBB) <= 2.5 * PD_BBB`. These extra caps constrain extreme relative overestimation for low reference PD anchors; 2.5 is an illustrative judgment call, not statistically validated. Solve with SLSQP bounded optimization and check the constraints.
 
-`PD(Z) = 1 / (1 + exp(-(a + b * Z)))`, `a = -1.92665108`, `b = -0.88741214`.
+| Metric at the 20 reference points | Previous | Updated full logistic |
+|---|---:|---:|
+| Mean absolute difference | 1.815 percentage points | **1.378 pp** |
+| Maximum absolute difference | 8.327 pp | **8.173 pp** |
+| AAA reference = 0.020% | 0.188% | **0.050%** |
+| BBB reference = 0.250% | 1.199% | **0.508%** |
+| CCC+ reference = 16.270% | 10.657% | **8.097%** |
+| D reference = 40.000% | 35.537% | **37.259%** |
 
-This is an **illustrative calibration**, not an empirically validated default model. Optimisation uses weighted nonlinear least squares on **PD levels** (not log-odds) versus the `Z_RATING_TABLE` entries in `config.py`. For finite Z bands the representative score is the midpoint; AAA uses its finite lower boundary (4.90) and D uses its finite upper boundary (-1.50). High-distress observations receive larger weights (D=5, CCC-=4, CCC=4, CCC+=5, B-=3, all others=1). A negative slope is constrained. See the CSV for all 20 comparisons.
+**Interpretation:** even the improved two-parameter curve materially underestimates CCC+ and overestimates CCC−. No two-parameter sigmoid can interpolate all 20 reference levels. Changing the fitting loss or anchor constraints would change the coefficients. 
 
-Average absolute difference from reference PD levels: 1.81 percentage points; maximum: 8.33 percentage points. **The full logistic cannot exactly preserve the 20 step-level values with just two coefficients**, and the ratings table itself is an indicative proxy (not default-frequency observations tied to Z-EM). John should review whether deviations are acceptable before citing point estimates as validated risk measures.
+## Rating-anchored sensitivity
 
-Key anchors:
+`pd_curves.py` and `templates/engine.js` implement monotone cubic Hermite interpolation of logit(PD), with tails linear in logit space. It matches every reference PD **at the defined representative score** (zero in-sample interpolation error) and is C1-continuous in Z, with PD within (0,1). At rating boundaries the PD is smooth rather than identical to the old piecewise-constant PD. This is not a two-parameter full logistic and is labeled as an alternative, not the primary logistic model.
 
-| Rating | Representative Z | Existing PD | Calibrated logistic PD |
-|---|---:|---:|---:|
-| D | -1.500 | 40.00% | 35.54% |
-| CCC- | -1.125 | 20.00% | 28.33% |
-| CCC | -0.400 | 16.27% | 17.20% |
-| CCC+ | 0.225 | 16.27% | 10.66% |
-| B- | 0.700 | 7.10% | 7.26% |
-| BBB | 2.800 | 0.25% | 1.20% |
+Both models calculate `EFC = PD*EAD*LGD` on **the same simulated financial paths**; no Bernoulli default or realised loss draw. A missed debt service marker does not override MC PD. The final-year P95 is a percentile of expected costs across shock paths; it is not an actual budget payment tail-risk measure. Neither model has validation against SOE default observations, and observed outcomes are needed before making predictions for fiscal policy.
 
-## Important implementation limits
-
-1. The Monte Carlo PD curve is endogenous to each drawn financial path **via its year-specific Z-EM**. This is a structural score-to-PD mapping, not a causal/default-data-estimated model.
-2. In Monte Carlo, a cash waterfall missed-debt flag does **not** override the logistic PD. The simulated Z-EM remains the sole input to the PD curve. Deterministic views keep their original missed-debt override.
-3. No actual defaults or realised losses are simulated. The percentiles reported are percentiles of **EFC across shocked paths**; they are not quantiles of realised government transfers.
-4. Strong calibration requires externally sourced historical default frequency estimates, a rating cohort horizon, and country/SOE validation. The current rating-to-Z proxies cannot uniquely establish a credible statistical relationship.
-5. Changing calibration coefficients in `config.py` updates the JavaScript engine through its injected CFG, but the CSV must be regenerated using `scripts/calibrate_pd.py` for consistent documentation.
-6. PD/EFC charts in existing slide decks and deterministic EFC pages are **not** automatically updated by this Monte Carlo-only change.
+See `docs/PD_FINAL_DECISION.md` for usage and methods.

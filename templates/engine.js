@@ -194,7 +194,7 @@
         ArrIPP: 0, ArrFuel: 0, ArrDebt: 0, ArrOps: 0, Reserve: 0, // cash waterfall: arrears by priority tier and the reserve account
         ArrStat: 0, ArrFloor: 0, ArrJun: 0, StateShortfall: 0, CustArrears: 0,
         // snapshot rules: a year with debt service unpaid is rated D; share of the State receivable in current assets
-        DefaultRule: num(p.default_on_missed_debt, 1) > 0,
+        DefaultRule: num(p.default_on_missed_debt, 0) > 0,
         RecvCurrent: Math.min(1, Math.max(0, num(p.receivable_current_share, 1))),
       };
       const grants0 = num(base[K.grants], NaN);
@@ -446,6 +446,39 @@
     // the D band: its upper Z bound and PD anchor the logistic tail
     const Z_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], PD_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][3];
     const logistic = (x) => (isNum(x) ? 1 / (1 + Math.exp(-x)) : NaN);
+    // C1 monotone cubic Hermite interpolation in log-odds (PCHIP) with
+    // logit-linear tails. Each of the 20 rating midpoint PDs is an exact anchor.
+    // This is a sensitivity to the full logistic model, not a single logistic.
+    const anchors = CFG.Z_RATING_TABLE.map(([lo,hi,r,pd]) => ({
+      x: lo === null ? hi : hi === null ? lo : (lo+hi)/2,
+      y: Math.log(pd/(1-pd))
+    })).sort((a,b) => a.x-b.x);
+    const hx = anchors.slice(1).map((a,i) => a.x-anchors[i].x);
+    const delta = hx.map((h,i) => (anchors[i+1].y-anchors[i].y)/h);
+    const endSlope = (h0,h1,d0,d1) => {
+      let m=((2*h0+h1)*d0-h0*d1)/(h0+h1);
+      if(m*d0<=0) return 0;
+      if(d0*d1<0 && Math.abs(m)>3*Math.abs(d0)) return 3*d0;
+      return m;
+    };
+    const derivatives = anchors.map((_,i) => {
+      const k=anchors.length-1;
+      if(i===0) return endSlope(hx[0],hx[1],delta[0],delta[1]);
+      if(i===k) return endSlope(hx[k-1],hx[k-2],delta[k-1],delta[k-2]);
+      if(delta[i-1]*delta[i]<=0) return 0;
+      const w1=2*hx[i]+hx[i-1],w2=hx[i]+2*hx[i-1];
+      return (w1+w2)/(w1/delta[i-1]+w2/delta[i]);
+    });
+    function ratingSmooth(z) {
+      if(!isNum(z)) return NaN;
+      const n=anchors.length-1;
+      if(z<=anchors[0].x) return logistic(anchors[0].y+derivatives[0]*(z-anchors[0].x));
+      if(z>=anchors[n].x) return logistic(anchors[n].y+derivatives[n]*(z-anchors[n].x));
+      let i=0;while(i<n-1 && z>=anchors[i+1].x)i++;
+      const h=hx[i],t=(z-anchors[i].x)/h;
+      return logistic((2*t*t*t-3*t*t+1)*anchors[i].y+(t*t*t-2*t*t+t)*h*derivatives[i]
+        +(-2*t*t*t+3*t*t)*anchors[i+1].y+(t*t*t-t*t)*h*derivatives[i+1]);
+    }
     /** shocks.pd_value */
     function pdValue(z, rating, debtDefault, p) {
       p = p || {};
@@ -453,7 +486,8 @@
       const method = p.pd_method ? String(p.pd_method) : "rating";
       if (method === "user") return Math.min(1, Math.max(0, isNum(p.pd_user) ? p.pd_user : 0.1));
       const b = isNum(p.pd_logit_b) ? p.pd_logit_b : -1.17;
-      if (method === "logistic") return isNum(z) ? logistic((isNum(p.pd_logit_a) ? p.pd_logit_a : -2.18) + b * z) : NaN;
+      if (method === "logistic") return isNum(z) ? logistic((isNum(p.pd_logit_a) ? p.pd_logit_a : CFG.DEFAULT_CASH_SETTINGS.pd_logit_a) + b * z) : NaN;
+      if (method === "rating_smooth") return ratingSmooth(z);
       if (method === "rating_tail" && isNum(z) && z < Z_D) return logistic(Math.log(PD_D / (1 - PD_D)) + b * (z - Z_D));
       return pdByRating(rating);
     }
@@ -619,9 +653,10 @@
      *  o: {n, fuelSd, fxSd, rho, rateSd, revSd, correlations, H, lgd, gdp, seed, eadShare}. With only fuel and FX
      *  drawn, the draws are the same as the original two-variable version for the same seed. */
     function monteCarlo(base, p, o) {
-      // John (Oct 2026): Monte Carlo computes expected fiscal cost only.
-      // Force full logistic for all Z-EMs, without a 100% PD override on missed debt service.
-      const mcP = Object.assign({}, p, { pd_method: "logistic", pd_override_on_missed_service: false });
+      // Default full logistic model; optional rating-anchored sensitivity.
+      const mcMethod=p.mc_pd_method || "logistic";
+      if(!["logistic","rating_smooth"].includes(mcMethod)) throw new Error("Invalid MC PD method");
+      const mcP = Object.assign({}, p, { pd_method: mcMethod, pd_override_on_missed_service: false });
       const g = rng(o.seed ?? 42), sims = [], n = o.n, H = o.H;
       const corrs = Object.assign({}, o.correlations || {});
       if (!("fuel|fx" in corrs)) corrs["fuel|fx"] = o.rho ?? 0;
@@ -649,6 +684,13 @@
         if ("rate" in d) sp.rate_shock_bps = d.rate;
         if ("revenue" in d) { sp.revenue_shock_std_devs = d.revenue; sp.revenue_shock_pct = d.revenue * sigma; }
         const path = costPath(runScenario(base, sp, H), o.lgd, o.gdp || null, o.eadShare ?? 1, mcP);
+        for(const row of path) {
+          row.PD_Full_Logistic=pdValue(row.Z_EM,row.Rating,false,{...mcP,pd_method:"logistic"});
+          row.PD_Rating_Anchored=ratingSmooth(row.Z_EM);
+          row.EFC_Full_Logistic=row.PD_Full_Logistic*row.EAD*row.LGD;
+          row.EFC_Rating_Anchored=row.PD_Rating_Anchored*row.EAD*row.LGD;
+          row.MC_PD_Model=mcMethod;
+        }
         sims.push({ fuel: d.fuel, fx: d.fx, draw: d, path });
       }
       sims.names = names;

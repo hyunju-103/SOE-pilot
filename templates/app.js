@@ -1346,7 +1346,7 @@
   const wfOrderItems = (q) => Object.keys(WF_TIER).filter((k) => (k !== "om_floor" || (q.om_floor_share || 0) > 0) && (k !== "junior" || (q.junior_share || 0) > 0) && (k !== "reserve" || (q.reserve_months || 0) > 0));
   const WF_TIER_SET = { statutory: "Rank: taxes, operator", ipp: "Rank: IPPs", fuel: "Rank: fuel and gas", debt: "Rank: debt service", reserve: "Rank: reserve", om_floor: "Rank: O&M floor", residual: "Rank: residual" };
   const WF_RULES = [["soe", "The SOE (own costs above the floor first)"], ["junior", "Junior creditors first"], ["pro_rata", "The SOE and junior creditors pro rata"], ["state", "The State pays it"]];
-  const PD_METHODS = [["rating", "Rating bands (at most 40%)"], ["rating_tail", "Rating bands with a logistic tail (above 40%)"], ["logistic", "Logistic in Z-EM"], ["user", "User-specified"]];
+  const PD_METHODS = [["rating", "Rating bands (at most 40%)"], ["rating_tail", "Rating bands with a logistic tail (above 40%)"], ["logistic", "Logistic in Z-EM"], ["rating_smooth", "Smooth rating-anchored (C1; sensitivity)"], ["user", "User-specified"]];
   // arrears columns by tier: [rank key, path column, short label]
   const WF_COLS = [["statutory", "Arrears to Statutory and Operator", "Taxes, operator"], ["ipp", "Arrears to IPPs", "IPPs"], ["fuel", "Arrears to Fuel Suppliers", "Fuel"], ["debt", "Missed Debt Service", "Debt service"],
     ["om_floor", "Arrears on O&M Floor", "O&M floor"], ["ops", "Arrears on Own Operations", "Own operations"], ["junior", "Arrears to Junior Creditors", "Junior creditors"]];
@@ -1532,8 +1532,8 @@
         sl2("Late-payment interest: IPPs and fuel", "late_rate_priority", 0, 0.2, 0.005, rate, "Late-payment interest in the PPAs and fuel contracts. Placeholder: set from the contracts."),
         sl2("Default interest: missed debt service", "late_rate_debt", 0, 0.25, 0.005, rate, "Default interest on debt service not paid on time. Placeholder: set from the loan documents."),
         sl2("Late-payment interest: other tiers", "late_rate_other", 0, 0.2, 0.005, rate, "Taxes, the SOE's own costs, other suppliers and regulators."),
-        el("div", { class: "fld" }, el("span", { class: "lbl" }, "Missed debt service counts as default", info("On: a year that ends with debt service unpaid is rated D, and its PD is the PD on default set below the panel (100% by default). Off: the rating follows Z-EM only.")),
-          seg([[0, "Off"], [1, "On"]], (ok(e.default_on_missed_debt) ? e.default_on_missed_debt : 1) > 0 ? 1 : 0, (v) => { e.default_on_missed_debt = v; this.schedule(); }, "Missed debt service counts as default")),
+        el("div", { class: "fld" }, el("span", { class: "lbl" }, "Treat missed debt service as default (single-scenario sensitivity only)", info("On: a year that ends with debt service unpaid is rated D, and its PD is the PD on default set below the panel (100% by default). Off: the rating follows Z-EM only.")),
+          seg([[0, "Off"], [1, "On"]], (ok(e.default_on_missed_debt) ? e.default_on_missed_debt : 0) > 0 ? 1 : 0, (v) => { e.default_on_missed_debt = v; this.schedule(); }, "Treat missed debt service as default (single-scenario sensitivity only)")),
         head("Behaviour", "Scenario parameters, not observed values: test them as sensitivities."),
         sl2("Supplier response: price cut for priority", "priority_discount", 0, 0.1, 0.005, rate, "Share of the IPP and fuel bills that priority creditors give back (lower prices or longer credit) in return for being paid first. Scales with the routed share. 0 = no response."),
         sl2("State response: extra compensation paid in-year", "state_paid_uplift", 0, 1, 0.05, (v) => (v > 0 ? "+" + pct0(v) : "none"), "Rise in the in-year paid share of State compensation while the waterfall is in force (times the routed share); +30% takes 60% to 90%. A waterfall can lock in payments but not the State's fiscal capacity, so 0 is the cautious case."),
@@ -1607,6 +1607,11 @@
     },
     /** probability of default: method, parameters and the PD on a missed debt payment (below LGD / EAD) */
     pdFields() {
+      // Avoid offering deterministic rating/default controls while the user is viewing
+      // Monte Carlo: those controls do not affect its full-logistic/EFC-only model.
+      if (S.sh.view === "mc") return [el("div", {class:"mc-pd-side-note"},
+        el("b",{},"Monte Carlo PD: full logistic"),
+        el("small",{},"Uses each simulated Z-EM, with no 40% rating ceiling and no realised-default draws. See the comparison on the right."))];
       const e = S.sh.expo, m = e.pd_method || "rating";
       const ex = el("small", {});
       const showEx = () => {
@@ -1616,7 +1621,6 @@
       showEx();
       const sl2 = (label, k, mn, mx, step, f, help) => fSlider(label, { min: mn, max: mx, step, value: ok(e[k]) ? e[k] : CFG.DEFAULT_CASH_SETTINGS[k], fmt: f, id: "sh-" + k, info: help }, (v) => { e[k] = v; showEx(); this.schedule(); });
       return [
-        S.sh.view === "mc" ? el("p", { class: "note" }, `Monte Carlo always uses calibrated full logistic PD: a=${fmt(e.pd_logit_a, 3)}, b=${fmt(e.pd_logit_b, 3)}. The selector below controls deterministic views only.`) : null,
         fSelect("Probability of default (PD)", PD_METHODS, m, (v) => { e.pd_method = v; rebuild(); },
           { info: "Rating bands: PD by Z-EM rating, at most 40% (rating D). Logistic tail: the same bands, but below the D threshold (Z-EM " + fmt(CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], 1) + ") PD keeps rising along a logistic curve from 40% towards 100%. Logistic: PD = 1 / (1 + e^−(a + b·Z)) for every Z. User: one PD for every year. This selector controls single-scenario views; Monte Carlo always uses full logistic PD for expected fiscal cost." }),
         m === "rating_tail" || m === "logistic" ? sl2("Logistic slope b", "pd_logit_b", -3, -0.2, 0.01, (v) => fmt(v, 2), "How fast PD rises as Z-EM falls (negative). Calibrated against the current illustrative rating table; update with observed defaults when available.") : null,
@@ -1674,6 +1678,38 @@
       H.wfs = card("Waterfall scenarios and sensitivity", "The review's four scenarios on the same baseline, then the cost-recovery ratio, compliance and collection");
       H.out.replaceChildren(H.subsidy, H.cash.root, H.wfs.root, el("div", { class: "grid" }, el("div", { class: "s6" }, H.z.root), el("div", { class: "s6" }, H.e.root)), el("div", { class: "grid" }, el("div", { class: "s5" }, H.tor.root), el("div", { class: "s7" }, H.imp.root)), H.proj.root);
     },
+    drawPDCalibration(p) {
+      const H = this.H, a = p.pd_logit_a, b = p.pd_logit_b;
+      const pred = (z) => E.pdValue(z, E.zRating(z), false, {pd_method:"logistic",pd_logit_a:a,pd_logit_b:b});
+      const rating = (z) => E.pdValue(z, E.zRating(z), false, {pd_method:"rating"});
+      const zw = [-4,-3,-2,-1,0,1,2,3,4,5], xlo=-5, xhi=5, W=720, ht=244, L=55, R=22, T=14, B=35;
+      const x=(z)=>L+(z-xlo)/(xhi-xlo)*(W-L-R), y=(pd)=>ht-B-pd*(ht-B-T);
+      const svg=svgEl("svg",{viewBox:`0 0 ${W} ${ht}`,width:"100%",role:"img", "aria-label":"Full logistic PD is continuous, whereas rating-band PD is a staircase with a 40 percent ceiling"});
+      [0,.2,.4,.6,.8,1].forEach((v)=>{
+        svgEl("line",{x1:L,x2:W-R,y1:y(v),y2:y(v),class:"grid-l"},svg);
+        txt(svg,L-8,y(v),fmt(v*100,0)+"%","t-muted num","end",10.5);
+      });
+      zw.forEach(z=>txt(svg,x(z),ht-14,z.toString(),"t-muted num","middle",10.5));
+      const pts=[];for(let k=0;k<=250;k++){const z=xlo+k*(xhi-xlo)/250;pts.push((k?"L":"M")+x(z).toFixed(2)+","+y(pred(z)).toFixed(2));}
+      svgEl("path",{d:pts.join(""),class:"pd-curve-logistic"},svg);
+      const pts2=[];for(let k=0;k<=250;k++){const z=xlo+k*(xhi-xlo)/250;const v=E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth"});pts2.push((k?"L":"M")+x(z).toFixed(2)+","+y(v).toFixed(2));}
+      svgEl("path",{d:pts2.join(""),class:"pd-curve-smooth"},svg);
+      // A staircase, not a smoothed line: show that the prior rating approach has jumps.
+      const boundaries=[xlo,...CFG.Z_RATING_TABLE.flatMap(v=>[v[0],v[1]]).filter(z=>ok(z)&&z>xlo&&z<xhi),xhi].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a-b);
+      let d="";for(let i=0;i<boundaries.length-1;i++){
+        const z0=boundaries[i],z1=boundaries[i+1],v=rating((z0+z1)/2),py=y(v);
+        d+=(i===0?`M${x(z0)},${py}`:`V${py}`)+`H${x(z1)}`;
+      }
+      svgEl("path",{d,class:"pd-curve-rating"},svg);
+      svgEl("line",{x1:L,x2:W-R,y1:y(.4),y2:y(.4),class:"pd-reference"},svg);
+      txt(svg,W-R-4,y(.4)-8,"40% rating ceiling","t-muted","end",10);
+      H.pdChart.replaceChildren(svg);
+      const anchors=[[-3,"Severe distress"],[-1.5,"D threshold"],[-.4,"CCC midpoint"],[.225,"CCC+ midpoint"],[.7,"B- midpoint"],[2.8,"BBB midpoint"]];
+      const diffs=anchors.map(([z])=>Math.abs(pred(z)-rating(z)));
+      H.pdLead.textContent=`Full logistic: PD = sigmoid(${fmt(a,4)} ${b<0?"−":"+"} ${fmt(Math.abs(b),4)} × Z-EM). Selected calibration is illustrative, fitted to reference rating PDs; it is not validated against observed defaults. It produces PD ${pctAuto(pred(-3))} at Z-EM −3 versus 40% under the rating ceiling.`;
+      const smooth=(z)=>E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth"});
+      H.pdTable.replaceChildren(simpleTable(["Z-EM","Rating band PD","Full logistic PD","Smooth anchored PD","Logistic − rating"],anchors.map(([z,label])=>[`${fmt(z,3)} · ${label}`,pct(rating(z),2),pct(pred(z),2),pct(smooth(z),2),`${sgn((pred(z)-rating(z))*100,2)} pp`]),{right:i=>i>0,cls:"compact"}));
+    },
     buildMC() {
       const st = S.sh.mc, H = this.H;
       const LBL = { fuel: "Fuel", fx: "FX", rate: "Rate", revenue: "Revenue" };
@@ -1694,6 +1730,23 @@
         sdSlider("Interest-rate shock std. dev.", "rsd", { min: 0, max: 500, step: 25, fmt: (v) => (v ? fmt(v, 0) + " bps" : "off") }, "Spread of the interest-rate shock, centred on the rate slider. 0 = not drawn (held at the slider value)."),
         sdSlider("Revenue shock std. dev.", "vsd", { min: 0, max: 2, step: 0.1, fmt: (v) => (v ? fmt(v, 1) + " s.d." : "off") }, "Spread of the revenue shock in standard deviations of this SOE's own revenue growth, centred on the revenue slider. 0 = not drawn."));
       drawCorr();
+      H.mcMethodSelect = fSelect("Monte Carlo PD model", [["logistic","Full logistic (default)"], ["rating_smooth","Smooth rating-anchored (sensitivity)"]], st.pdmodel || "logistic", (v) => {st.pdmodel=v;this.schedule();},
+        {info:"Full logistic is a two-parameter sigmoid model. Smooth rating-anchored is a C1 monotone logit-spline through the 20 reference PD levels, provided as a sensitivity rather than a replacement for the full logistic."});
+      H.pdLead = el("p", {class:"note",style:"margin:0 0 12px"});
+      H.pdChart = el("div",{class:"pd-comparison-chart"});
+      H.pdTable = el("div");
+      H.pdSensitivity=el("div",{class:"mc-sensitivity"});
+      const more = el("details",{class:"mc-advanced"},
+        el("summary",{},"Rating PD comparison and calibration details"),
+        H.pdChart,
+        el("div",{class:"pd-chart-legend"},el("span",{class:"legend-key pd-logistic-key"},"Full logistic"),el("span",{class:"legend-key pd-smooth-key"},"Smooth anchored"),el("span",{class:"legend-key pd-rating-key"},"Original rating steps")),
+        H.pdTable,
+        el("p",{class:"note"},"The full logistic is a two-parameter curve and cannot exactly fit all 20 levels. The smooth anchored sensitivity is C1-continuous and exactly matches the reference rating PDs at their representative scores, but is not a single logistic. Neither has been validated against actual default histories."));
+      const pdBox=card("PD model · Monte Carlo", "Full logistic is the default; the anchored smooth sensitivity is a different mathematical model. Both use identical shocks when compared.");
+      pdBox.body.append(H.mcMethodSelect, el("div",{class:"mc-model-summary"},
+        el("span",{class:"mc-pill"},"Full logistic · default"),el("span",{class:"mc-pill"},"EFC only"),
+        el("span",{class:"mc-pill"},"No actual default draws")),H.pdLead,H.pdSensitivity,more);
+      H.pdModel=pdBox;
       H.mcnote = el("p", { class: "note" });
       H.mcerr = el("div");
       const c = card("Monte Carlo settings", null, null); c.body.append(set, el("div", { class: "lbl", style: "margin:12px 0 6px" }, "Correlations between the drawn shocks"), corrBox, H.mcnote, H.mcerr);
@@ -1703,7 +1756,7 @@
       H.fan = card("Expected fiscal cost — percentile path"); H.fan.body.append(legendRow([legendItem(LG.med, "Median"), legendItem(LG.inner, "25th–75th"), legendItem(LG.outer, "5th–95th")]), el("div", { class: "chart" }));
       H.pt = card("Percentile summary (final year)");
       H.mcres = el("div", { class: "stack" }, el("div", { class: "grid" }, el("div", { class: "s7" }, H.zh.root), el("div", { class: "s5" }, H.zd.root)), H.eh.root, H.fan.root, H.pt.root);
-      H.out.replaceChildren(c.root, H.mcres);
+      H.out.replaceChildren(H.pdModel.root, c.root, H.mcres);
     },
     buildAll() {
       const H = this.H;
@@ -1769,8 +1822,12 @@
           prio(pkPrio) > 0 ? `peak in ${pkPrio["Calendar Year"]}: IPPs ${money(pkPrio["Arrears to IPPs"])} · fuel ${money(pkPrio["Arrears to Fuel Suppliers"])} · debt service ${money(pkPrio["Missed Debt Service"])}` + (pkPrio["Arrears to Statutory and Operator"] ? ` · taxes and operator ${money(pkPrio["Arrears to Statutory and Operator"])}` : "") : "taxes, IPPs, fuel and debt service paid in full every year") : null,
         wfOn && rule === "state" ? tile("State pays the waterfall's shortfall", statePayT > 0 ? "alert" : "ok", statePayT > 0 ? "Budget cost" : "None", money(statePayT), CUR,
           "a budget transfer into equity, so no tier goes unpaid · a direct fiscal cost on top of EFC" + (gs && statePayT > 0 ? ` · ${pctS(statePayT / gs[1])} of year-1 GDP` : "")) : null,
-        wfOn && (p.default_on_missed_debt ?? 1) > 0 ? tile("Debt service missed", dft ? "alert" : "ok", dft ? "Default" : "Paid", dft ? String(dft["Calendar Year"]) : "None", "",
-          dft ? `rated D from ${dft["Calendar Year"]} · PD ${pctAuto(dft.PD)} · ${money(dft["Missed Debt Service"])} unpaid` : "debt service paid in full every year") : null,
+        wfOn ? (() => {
+          const miss = path.find((r) => r["Missed Debt Service"] > 0), treated = (p.default_on_missed_debt ?? 0) > 0;
+          if (!miss) return tile("Debt service unpaid", "ok", "Paid", "None", "", "debt service paid in full every year");
+          if (dft) return tile("Debt service unpaid", "alert", "Rating override", String(dft["Calendar Year"]), "", `rated D in ${dft["Calendar Year"]} · PD ${pctAuto(dft.PD)} · ${money(dft["Missed Debt Service"])} unpaid`);
+          return tile("Debt service unpaid", "alert", "Unpaid", String(miss["Calendar Year"]), "", `${money(miss["Missed Debt Service"])} unpaid · ${treated ? "sensitivity rule active" : "not automatically treated as a default"} · PD follows the selected model`);
+        })() : null,
         partial ? tile("Cash routed through the waterfall", null, null, pct0(last(routed)), "", path.slice(1).map((r, i) => `${r["Calendar Year"]} ${pct0(routed[i])}`).join(" · ") + " · coverage × compliance × ramp-up; the rest is handled as without the waterfall") : null,
         lateT ? tile("Late-payment interest", "watch", "Cost", money(lateT), CUR, "on arrears left unpaid, over the horizon · in interest expense") : null,
         custArr ? tile("Customer arrears", f["Customer Arrears"] > 0 ? "watch" : null, null, money(f["Customer Arrears"]), CUR, `unpaid customer bills at the end of ${f["Calendar Year"]} · public administrations collect ${pct0(p.collect_public ?? 1)}`) : null,
@@ -1903,12 +1960,13 @@
         rebuild();
       };
       const anyState = rows.some((x) => at(x.path)["Cumulative State Shortfall Payment"]), anyDft = rows.some((x) => x.path.some((r) => r["Debt Default"] > 0));
-      const t1 = simpleTable(["Scenario", `Z-EM ${yF}`, "vs 1", ...(yL !== yF ? [`Z-EM ${yL}`] : []), "X1", "Current ratio", "Arrears", "of which SOE", ...(anyState ? ["State pays"] : []), ...(anyDft ? ["Default"] : []), "Cumulative PD", gs ? "EFC / GDP" : "EFC"],
+      const anyMiss = rows.some((x) => at(x.path)["Missed Debt Service"] > 0);
+      const t1 = simpleTable(["Scenario", `Z-EM ${yF}`, "vs 1", ...(yL !== yF ? [`Z-EM ${yL}`] : []), "X1", "Current ratio", "Arrears", "of which SOE", ...(anyMiss ? ["Debt service unpaid"] : []), ...(anyState ? ["State pays"] : []), ...(anyDft ? ["Default"] : []), "Cumulative PD", gs ? "EFC / GDP" : "EFC"],
         rows.map((x, i) => {
           const f = at(x.path), dft = x.path.find((r) => r["Debt Default"] > 0);
           return [el("td", { style: "min-width:190px" }, el("b", {}, `${i + 1} `), x.sc.short, x.sc.oil_shock ? el("div", { class: "muted", style: "font-size:11.5px" }, shockOn ? "the shock set on the panel" : "oil price path " + oil.fuel_shock_path.filter((v) => v).map(pctSig).join(" / ")) : null),
             `${fmt(f.Z_EM, 2)} (${f.Rating})`, i ? sgn(f.Z_EM - sq.Z_EM, 2) : "—", ...(yL !== yF ? [`${fmt(last(x.path).Z_EM, 2)} (${last(x.path).Rating})`] : []), fmt(x1(f), 3), fmt(f["Current Ratio"], 2), money(arr(f)), money((f["Arrears on Own Operations"] || 0) + (f["Arrears on O&M Floor"] || 0)),
-            ...(anyState ? [money(f["Cumulative State Shortfall Payment"])] : []), ...(anyDft ? [dft ? String(dft["Calendar Year"]) : "—"] : []), pctAuto(E.cumulativePd(x.path.slice(1).map((r) => r.PD))), efcF(f[efcK])];
+            ...(anyMiss ? [money(f["Missed Debt Service"])] : []), ...(anyState ? [money(f["Cumulative State Shortfall Payment"])] : []), ...(anyDft ? [dft ? String(dft["Calendar Year"]) : "—"] : []), pctAuto(E.cumulativePd(x.path.slice(1).map((r) => r.PD))), efcF(f[efcK])];
         }), { right: (i) => i >= 1, cls: "compact" });
       const loadRow = el("div", { class: "presets", style: "margin:10px 0 0" }, el("span", { class: "chips-label" }, "Load into the panel:"),
         ...rows.map((x, i) => el("button", { class: "btn-ghost", type: "button", onclick: () => load(x), title: x.sc.label }, `${i + 1} ${x.sc.short}`)));
@@ -1940,11 +1998,12 @@
     },
     renderMC(b, p, gs) {
       const st = S.sh, m = st.mc, H = this.H;
+      this.drawPDCalibration(p);
       const fpk = p.fuel_shock_path && p.fuel_shock_path.length ? p.fuel_shock_path.reduce((a, v) => (Math.abs(v) > Math.abs(a) ? v : a), p.fuel_shock_path[0]) : null;
-      H.mcnote.textContent = `Monte Carlo estimates expected fiscal cost only (PD × EAD × LGD). Calibrated full logistic PD (a = ${fmt(p.pd_logit_a, 3)}, b = ${fmt(p.pd_logit_b, 3)}) is used for each simulated Z-EM, without a missed-payment PD override or realised-default draws. ` + `Draws are centred on the sliders (mean fuel shock ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " = the peak of the fuel price path, each draw rescaling the whole path"}, mean FX shock ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, mean rate shock ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, mean revenue shock ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + "); all other parameters stay at their slider values.";
+      H.mcnote.textContent = `PD model: ${(m.pdmodel || "logistic") === "logistic" ? "Full logistic (default)" : "Smooth rating-anchored (sensitivity)"}. Mean shocks: fuel ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " (peak of the path)"}, FX ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, interest rate ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, revenue ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + `. EFC = PD × EAD × LGD in each simulated year; the distribution is across expected costs, not realized defaults.`;
       let sims;
       try {
-        sims = E.monteCarlo(b, { ...p, pd_method: "logistic" }, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });
+        sims = E.monteCarlo(b, { ...p, mc_pd_method: (m.pdmodel || "logistic") }, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });
       } catch (e) {
         H.mcerr.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, e.message));
         H.mcres.hidden = true;
@@ -1954,18 +2013,24 @@
       H.mcerr.replaceChildren(); H.mcres.hidden = false;
       const fin = sims.map((s) => last(s.path));
       const q = (k, x) => E.quantile(fin.map((r) => r[k]), x);
+      H.pdSensitivity.replaceChildren(el("h4",{},"Same-draw PD model sensitivity · final year"),
+        simpleTable(["PD curve", "Median EFC", "P95 EFC"], [
+          ["Full logistic", money(q("EFC_Full_Logistic", .5)), money(q("EFC_Full_Logistic", .95))],
+          ["Smooth rating-anchored", money(q("EFC_Rating_Anchored", .5)), money(q("EFC_Rating_Anchored", .95))]
+        ],{right:i=>i>0,cls:"compact"}),
+        el("p",{class:"note"},"Same shocks, EAD and LGD. P95 is a percentile of expected costs, not a realised government payout."));
       const p50 = q("EFC", 0.5), p95 = q("EFC", 0.95), dist = fin.filter((r) => r.Zone === "Distress").length / fin.length;
       const gF = gs ? last(gs) : null;
       put(H.strip,
         tile(`Median EFC, year ${st.H}`, null, null, money(p50), CUR, `${st.soe} · ${m.n.toLocaleString("en-US")} simulations`),
-        tile("Fiscal-at-risk (p95)", null, null, money(p95), CUR, "Bad but plausible: 1 in 20 draws is worse"),
+        tile("P95 of expected fiscal cost", null, null, money(p95), CUR, "Top 5% of shock paths have higher modelled EFC, not realised payout"),
         tile("Ending in distress", dist > 0.5 ? "alert" : dist > 0 ? "watch" : "ok", null, pct(dist, 0), "", `of simulations, Z-EM ≤ ${CFG.Z_DISTRESS_CUTOFF} in ${last(fin)["Calendar Year"]}`),
-        tile("Fiscal-at-risk / GDP", null, null, gF ? pctS(p95 / gF) : "—", "", gF ? `GDP in ${last(fin)["Calendar Year"]}: ${money(gF)}` : "Enter GDP in the panel"));
+        tile("P95 expected fiscal cost / GDP", null, null, gF ? pctS(p95 / gF) : "—", "", gF ? `GDP in ${last(fin)["Calendar Year"]}: ${money(gF)}` : "Enter GDP in the panel"));
       histogram(H.zh.body.lastChild, fin.map((r) => r.Z_EM), { zones: true, vlines: [{ x: CFG.Z_DISTRESS_CUTOFF, cls: "thr-crit" }, { x: CFG.Z_SAFE_CUTOFF, cls: "thr-warn" }] });
       const zc = zoneCounts(fin);
       H.zd.body.firstChild.replaceChildren(el("div", { class: "hero", style: "gap:12px" }, el("div", { class: "hero-value", style: "font-size:40px" }, pct(dist, 0), el("small", {}, "of simulations end in distress")), ...zoneBar(zc, fin.length),
         el("p", { class: "note", style: "margin:0" }, `Median Z″ ${fmt(q("Z_EM", 0.5), 2)}; 5th percentile ${fmt(q("Z_EM", 0.05), 2)}.`)));
-      histogram(H.eh.body.firstChild, fin.map((r) => r.EFC), { xFmt: (t, s) => moneyTick(t, s), vlines: [{ x: p95, cls: "thr-crit", label: "95th pct. (fiscal-at-risk)" }, { x: p50, cls: "ref-l", label: "median" }] });
+      histogram(H.eh.body.firstChild, fin.map((r) => r.EFC), { xFmt: (t, s) => moneyTick(t, s), vlines: [{ x: p95, cls: "thr-crit", label: "95th pct. of EFC" }, { x: p50, cls: "ref-l", label: "median" }] });
       const key = gs ? "EFC_GDP" : "EFC", pp = E.percentilePath(sims, key), xs = pp.map((r) => r.year);
       H.fan.head.querySelector("h3").textContent = gs ? "Expected fiscal cost / GDP — percentile path" : `Expected fiscal cost — percentile path${CUR ? " (" + CUR + ")" : ""}`;
       const f = gs ? (v) => pctS(v) : (v) => money(v);
@@ -1974,8 +2039,8 @@
           tip: (i) => [[f(pp[i].p95), "95th"], [f(pp[i].p75), "75th"], [f(pp[i].p50), "median"], [f(pp[i].p25), "25th"], [f(pp[i].p5), "5th"]], xLab: (i) => (i === 0 ? `${xs[i]} base` : String(xs[i])) });
       H.pt.body.replaceChildren(simpleTable(["Percentile", "Z-EM", `EFC${CUR ? " (" + CUR + ")" : ""}`, ...(gF ? ["EFC / GDP"] : [])],
         [[0.05, "5th"], [0.25, "25th"], [0.5, "Median"], [0.75, "75th"], [0.95, "95th"]].map(([x, l]) => [l, fmt(q("Z_EM", x), 2), money(q("EFC", x)), ...(gF ? [pctS(q("EFC", x) / gF)] : [])]), { right: (i) => i >= 1 }),
-        el("div", { style: "margin-top:10px" }, dataButtons(() => toCSV(["sim", "fuel_shock_pct", "fx_shock_pct", ...(m.rsd > 0 ? ["rate_shock_bps"] : []), ...(m.vsd > 0 ? ["revenue_shock_std_devs"] : []), "Z_EM_final", "Zone_final", "PD_final", "EAD_final", "EFC_final"],
-          sims.map((s, i) => [i, s.fuel, s.fx, ...(m.rsd > 0 ? [s.draw.rate] : []), ...(m.vsd > 0 ? [s.draw.revenue] : []), last(s.path).Z_EM, last(s.path).Zone, last(s.path).PD, last(s.path).EAD, last(s.path).EFC])), `monte_carlo_${st.soe}.csv`)));
+        el("div", { style: "margin-top:10px" }, dataButtons(() => toCSV(["sim", "fuel_shock_pct", "fx_shock_pct", ...(m.rsd > 0 ? ["rate_shock_bps"] : []), ...(m.vsd > 0 ? ["revenue_shock_std_devs"] : []), "MC_PD_Model", "Z_EM_final", "Zone_final", "PD_final", "EAD_final", "EFC_final", "PD_Full_Logistic", "EFC_Full_Logistic", "PD_Rating_Anchored", "EFC_Rating_Anchored"],
+          sims.map((s, i) => [i, s.fuel, s.fx, ...(m.rsd > 0 ? [s.draw.rate] : []), ...(m.vsd > 0 ? [s.draw.revenue] : []), last(s.path).MC_PD_Model, last(s.path).Z_EM, last(s.path).Zone, last(s.path).PD, last(s.path).EAD, last(s.path).EFC, last(s.path).PD_Full_Logistic,last(s.path).EFC_Full_Logistic,last(s.path).PD_Rating_Anchored,last(s.path).EFC_Rating_Anchored])), `monte_carlo_${st.soe}.csv`)));
     },
     renderAll(gs) {
       const st = S.sh, H = this.H;

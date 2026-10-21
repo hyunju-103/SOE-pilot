@@ -1,3 +1,9 @@
+# Updated final model: Full Logistic PD + rating-anchored sensitivity (2026-10-20)
+
+This package retains the original cash Waterfall and EFC-only simulations. **Monte Carlo defaults to a single full logistic** `sigmoid(-2.18031828 - 1.10613960 × Z-EM)` to implement the two-parameter logistic specification. The alternative, **Smooth rating-anchored**, is a continuous C1 logit-PCHIP curve through all 20 reference PD levels; it is *not* a single two-parameter logistic and is provided only as an explicitly labeled sensitivity. Both use the same simulated financial paths; the UI reports final-year median and P95 of expected costs for each. No realised default events are sampled. See [`docs/PD_FINAL_DECISION.md`](docs/PD_FINAL_DECISION.md) and [`docs/VALIDATION_RESULTS.md`](docs/VALIDATION_RESULTS.md). Note: any older sections below describing Monte Carlo as *always* full logistic predate this selectable sensitivity. The **default** remains full logistic.
+
+---
+
 # SOE Fiscal Risk Tool
 
 Multi-page Python/Streamlit tool for state-owned enterprises: Altman
@@ -400,7 +406,7 @@ which the utility borrows to cover.
     for every simulated Z-EM, with EFC = PD × EAD × LGD. No Bernoulli default
     events or realised losses are drawn. Monte Carlo does not force PD to 100%
     if debt service is unpaid; deterministic views preserve their former option.
-    See `docs/PD_CALIBRATION.md` and `docs/CHANGES-John-EFC-only.md`.
+    See `docs/PD_CALIBRATION.md` and `docs/CHANGES-Full-Logistic-EFC-Only.md`.
   - *Refinancing* (separate assumption, `refinance_share`, 0 = off): in
     `refinance_start_year` (default 1), or later once the previous year's
     rating meets `refinance_min_rating`, that share of the short-term bank debt (the

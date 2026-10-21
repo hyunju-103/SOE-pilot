@@ -1,4 +1,4 @@
-> **Superseded for Monte Carlo (20 Oct 2026):** the default materialisation design documented below was subsequently withdrawn by John. The current Monte Carlo reports only logistic-based expected fiscal cost and does not simulate actual defaults. See `CHANGES-John-EFC-only.md`. All other historical changes remain documented below.
+> **Superseded for Monte Carlo (20 Oct 2026):** the default materialisation design documented below was subsequently excluded from the final scope. The current Monte Carlo reports only logistic-based expected fiscal cost and does not simulate actual defaults. See `CHANGES-Full-Logistic-EFC-Only.md`. All other historical changes remain documented below.
 
 # Cash waterfall v2: country orders, baseline drivers and a PD that keeps rising
 
