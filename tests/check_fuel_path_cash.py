@@ -25,6 +25,7 @@ cash-first financing in shocks.run_scenario.
 """
 
 import math
+import os
 import subprocess
 import sys
 import types
@@ -61,9 +62,13 @@ def same(a, b):
 
 
 def head_engine():
-    """shocks.py as of BASE_COMMIT, or None when git is unavailable."""
+    """shocks.py as of BASE_COMMIT, or None when that commit cannot be read.
+
+    BASE_COMMIT is not in this repository; point SOE_BASELINE_REPO at a clone of
+    hyunju-103/SOE (read-only use: only `git show`) to run the comparison."""
+    repo = os.environ.get("SOE_BASELINE_REPO") or str(ROOT)
     try:
-        src = subprocess.run(["git", "-C", str(ROOT), "show", f"{BASE_COMMIT}:shocks.py"],
+        src = subprocess.run(["git", "-C", repo, "show", f"{BASE_COMMIT}:shocks.py"],
                              capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -91,14 +96,10 @@ def params_for(r, p0):
 
 
 def identity_drift(path, r, p):
-    """TA - TL - Equity against its base-year gap, net of the arrears write-down (no offsetting entry by design)."""
+    """TA - TL - Equity against its base-year gap. The arrears write-down is charged to equity (C3a), so no offset is needed."""
     gap0 = r["Total Assets"] - r["Total Liabilities"] - r["Equity"]
-    out, arr = [], 0.0
-    for t in range(1, len(path)):
-        if t <= p["shock_duration_years"]:
-            arr += -p["arrears_pct_of_revenue"] * r["Revenues"]
-        out.append(path["Total Assets"].iloc[t] - path["Total Liabilities"].iloc[t] - path["Equity"].iloc[t] - gap0 - arr)
-    return out
+    return [path["Total Assets"].iloc[t] - path["Total Liabilities"].iloc[t] - path["Equity"].iloc[t] - gap0
+            for t in range(1, len(path))]
 
 
 def main():
@@ -140,30 +141,48 @@ def main():
     old = head_engine()
     n_draw = 0
     if old is None:
-        print("git not available — skipping the bit-exact comparison with", BASE_COMMIT)
+        print(f"commit {BASE_COMMIT} not in this repository; set SOE_BASELINE_REPO=<path to a clone of "
+              "hyunju-103/SOE> to run the bit-exact comparison (skipped)")
     else:
-        def compare(tag, a, b):
+        def compare(tag, a, b, r, p):
+            """Bit-exact against 064ac24 in every column, except the one deliberate difference (C3a): the
+            arrears write-down now also reduces Equity and Retained Earnings, cumulatively from year 1 for
+            shock_duration_years. In years where that write-down is non-zero, those two columns must equal
+            064ac24 plus it (1e-9) and the columns computed from them (X2, X4, Z_EM, Zone, Rating) are not
+            compared; every other column stays bit-exact. Years with no write-down are bit-exact in full."""
             nonlocal n
+            adj, tot = [0.0], 0.0
+            for t in range(1, len(b)):
+                if t <= p["shock_duration_years"]:
+                    tot += -p["arrears_pct_of_revenue"] * r["Revenues"]
+                adj.append(tot)
             for c in b.columns:
                 for t in range(len(b)):
                     n += 1
-                    if not same(a[c].iloc[t], b[c].iloc[t]):
-                        fails.append(f"2{tag} t={t} {c}: new={a[c].iloc[t]} head={b[c].iloc[t]}")
+                    if adj[t] != 0 and c in ("X2", "X4", "Z_EM", "Zone", "Rating"):
+                        n -= 1
+                        continue
+                    if adj[t] != 0 and c in ("Equity", "Retained Earnings"):
+                        ok = close(float(a[c].iloc[t]), float(b[c].iloc[t]) + adj[t])
+                    else:
+                        ok = same(a[c].iloc[t], b[c].iloc[t])
+                    if not ok:
+                        fails.append(f"2{tag} t={t} {c}: new={a[c].iloc[t]} head={b[c].iloc[t]} (arrears write-down {adj[t]})")
                         return
 
         for name, p0 in cases.items():
             for _, r in latest.iterrows():                      # (a) shipped defaults, no cash column
                 p = params_for(r, p0)
-                compare(f"a {name} {r['Entity']}", shocks.run_scenario(r, p, H), old.run_scenario(r, p, H))
+                compare(f"a {name} {r['Entity']}", shocks.run_scenario(r, p, H), old.run_scenario(r, p, H), r, p)
                 for blank in ([], 0.0, None):                   # an empty / zero path is the step profile
-                    compare(f"a {name} {r['Entity']} path={blank!r}", shocks.run_scenario(r, dict(p, fuel_shock_path=blank), H), old.run_scenario(r, p, H))
+                    compare(f"a {name} {r['Entity']} path={blank!r}", shocks.run_scenario(r, dict(p, fuel_shock_path=blank), H), old.run_scenario(r, p, H), r, p)
             for _, r in latest_cash.iterrows():
                 p = params_for(r, p0)
                 href = old.run_scenario(r, p, H)                # (b) buffer off on the cash copy
-                compare(f"b {name} {r['Entity']}", shocks.run_scenario(r, dict(p, cash_buffer_share=0.0), H), href)
+                compare(f"b {name} {r['Entity']}", shocks.run_scenario(r, dict(p, cash_buffer_share=0.0), H), href, r, p)
                 new = shocks.run_scenario(r, p, H)              # (c) defaults: identical when nothing is ever borrowed
                 if href["Cash Funding Gap"].abs().sum() == 0 or r["Entity"] not in CASH_SOES:
-                    compare(f"c {name} {r['Entity']}", new, href)
+                    compare(f"c {name} {r['Entity']}", new, href, r, p)
                 else:
                     n_draw += new["Cash Drawdown"].iloc[1:].gt(0).any()
                     n += 1
@@ -178,12 +197,18 @@ def main():
             fails.append("2c no demo SOE drew cash — the cash-first check is vacuous")
         # (d) Monte Carlo without a path: same random stream, same numbers
         base = latest[latest["Entity"] == "SOE F"].iloc[0]
-        p = params_for(base, std)
+        p = dict(params_for(base, std), arrears_pct_of_revenue=0.0)   # 064ac24 has no arrears charge to equity (C3a), which moves Z-EM
         a = shocks.run_monte_carlo(base, p, n_sims=200, fuel_std=0.10, fx_std=0.08, correlation=0.3, horizon_years=3, lgd_pct=70)
         b = old.run_monte_carlo(base, p, n_sims=200, fuel_std=0.10, fx_std=0.08, correlation=0.3, horizon_years=3, lgd_pct=70)
-        for c in ["fuel_shock_pct", "fx_shock_pct", "Z_EM", "EFC"]:
+        # Since 26ab06a the MC forces its own PD method (default rating_smooth) and no missed-service
+        # override, so its EFC column is no longer the deterministic band-PD EFC that 064ac24 reports.
+        # Compare the draws and Z-EM directly, and EFC after rebuilding the 064ac24 definition from the
+        # new run's own Z-EM / rating / debt-default / EAD / LGD (band PD, missed-service override on).
+        a_ref = shocks.add_cost(a, 70, 1.0, dict(p, pd_method="rating", pd_override_on_missed_service=True))
+        for c, x_col in [("fuel_shock_pct", a["fuel_shock_pct"]), ("fx_shock_pct", a["fx_shock_pct"]),
+                         ("Z_EM", a["Z_EM"]), ("EFC", a_ref["EFC"])]:
             n += 1
-            if not all(same(x, y) for x, y in zip(a[c], b[c])):
+            if not all(same(x, y) for x, y in zip(x_col, b[c])):
                 fails.append(f"2d Monte Carlo {c} differs from {BASE_COMMIT}")
 
     # 3. path [p]*D + [0]*(H-D) == step of magnitude p for D years

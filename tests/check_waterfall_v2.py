@@ -319,7 +319,7 @@ def main():
     check("15 default overrides", shocks.pd_value(3.0, "BBB+", True, {"pd_method": "user", "pd_user": 0.07}), 1.0)
     check("15 cumulative PD", shocks.cumulative_pd([0.1, 0.2, float("nan"), 0.5]), 1 - 0.9 * 0.8 * 0.5)
 
-    # 16. Final Monte Carlo: full logistic EFC only, no default draws.
+    # 16. Final Monte Carlo: EFC only, no default draws. Default PD = rating-anchored curve (AAA floor, logistic tail below D); logistic = sensitivity.
     r = demo[0][1]
     q = params_for(r, dict(oil, pd_method="user", pd_user=0.1, pd_on_default=1.0))
     kw = dict(n_sims=100, fuel_std=0.1, fx_std=0.08, correlation=0.3, horizon_years=5, lgd_pct=70, seed=42)
@@ -329,8 +329,12 @@ def main():
     check("16 no realised-loss columns", float(not {"Default Year", "Realised Cost"}.intersection(m1.columns)), 1.0)
     a, b = config.DEFAULT_CASH_SETTINGS["pd_logit_a"], config.DEFAULT_CASH_SETTINGS["pd_logit_b"]
     z = m1["Z_EM"].values
-    expected_pd = 1 / (1 + np.exp(-np.clip(a + b * z, -700, 700)))
-    check("16 PD calculated from each Z-EM", float(np.allclose(m1["PD"].values, expected_pd)), 1.0)
+    from pd_curves import anchored_pd
+    expected_pd = np.array([anchored_pd(v) for v in z])
+    check("16 PD calculated from each Z-EM (default: rating-anchored)", float(np.allclose(m1["PD"].values, expected_pd)), 1.0)
+    ml = shocks.run_monte_carlo(r, dict(q, mc_pd_method="logistic"), **kw)
+    expected_l = 1 / (1 + np.exp(-np.clip(a + b * ml["Z_EM"].values, -700, 700)))
+    check("16 PD with mc_pd_method=logistic (sensitivity)", float(np.allclose(ml["PD"].values, expected_l)), 1.0)
     check("16 EFC equals PD x EAD x LGD", float(np.allclose(m1["EFC"].values, m1["PD"].values * m1["EAD"].values * m1["LGD"].values)), 1.0)
     check("16 PD not the user's fixed 10%", float(not np.allclose(m1["PD"].values, 0.1)), 1.0)
     node = shutil.which("node")
@@ -339,11 +343,14 @@ def main():
 const fs = require("fs");
 const inp = JSON.parse(fs.readFileSync(0, "utf8"));
 const E = require(inp.engine).create(inp.config);
-const sims = E.monteCarlo(inp.row, inp.p, { n: 60, fuelSd: 0.1, fxSd: 0.08, rho: 0.3, H: 5, lgd: 70, seed: 42 });
+const mk = (p) => E.monteCarlo(inp.row, p, { n: 60, fuelSd: 0.1, fxSd: 0.08, rho: 0.3, H: 5, lgd: 70, seed: 42 });
+const sims = mk(inp.p), simsL = mk({ ...inp.p, mc_pd_method: "logistic" });
 const a = inp.config.DEFAULT_CASH_SETTINGS.pd_logit_a, b = inp.config.DEFAULT_CASH_SETTINGS.pd_logit_b;
-const ok = sims.every(s => !('defaultYear' in s) && !('realisedCost' in s) && s.path.every(r =>
-  !('Default Year' in r) && !('Realised Cost' in r) && Math.abs(r.PD - 1/(1+Math.exp(-(a+b*r.Z_EM)))) < 1e-12 &&
+const chk = (ss, f) => ss.every(s => !('defaultYear' in s) && !('realisedCost' in s) && s.path.every(r =>
+  !('Default Year' in r) && !('Realised Cost' in r) && Math.abs(r.PD - f(r)) < 1e-12 &&
   Math.abs(r.EFC - r.PD * r.EAD * r.LGD) < 1e-9 * Math.max(1,Math.abs(r.EFC))));
+const ok = chk(sims, r => E.pdValue(r.Z_EM, r.Rating, false, { pd_method: "rating_smooth", pd_logit_b: b })) && sims[0].path[0].MC_PD_Model === "rating_smooth" &&
+  chk(simsL, r => 1/(1+Math.exp(-(a+b*r.Z_EM)))) && simsL[0].path[0].MC_PD_Model === "logistic";
 process.stdout.write(JSON.stringify({ ok, n: sims.length }));
 """
         import report  # noqa: E402
@@ -352,7 +359,7 @@ process.stdout.write(JSON.stringify({ ok, n: sims.length }));
                    "row": {k: clean(v) for k, v in r.items()}, "p": {k: clean(v) for k, v in q.items()}}
         out = subprocess.run([node, "-e", js], input=json.dumps(payload), capture_output=True, text=True, check=True)
         o = json.loads(out.stdout)
-        check("16 JS EFC-only logistic Monte Carlo", float(o["ok"] and o["n"] == 60), 1.0)
+        check("16 JS EFC-only Monte Carlo (default rating-anchored; logistic sensitivity)", float(o["ok"] and o["n"] == 60), 1.0)
 
     if fails:
         print(f"FAIL — {len(fails)} of {n} checks:")

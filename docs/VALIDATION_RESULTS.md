@@ -3,7 +3,7 @@
 ## Completed checks
 
 - `python tests/check_pd_model_final.py` — PASS: all 20 reference PD anchors, 25,001 monotone-curve samples, numeric C1 knot derivative check, 321 Python–JavaScript PD comparisons, and identical-shock Monte Carlo switching and paired EFC output checks for Python and JavaScript.
-- `python tests/check_logistic_efc_scope.py` — PASS: 32 Python and 32 JavaScript observations, default full logistic EFC only, and no realised default draws/PD override.
+- `python tests/check_logistic_efc_scope.py` — PASS: 32 Python and 32 JavaScript observations, default rating-anchored (AAA floor, logistic tail) and logistic-sensitivity EFC only, and no realised default draws/PD override.
 - `python tests/check_logistic_mc.py` — PASS: existing logistic monotonicity, >40% distress tail, rating fallback and deterministic missed-service checks.
 - `python tests/check_waterfall_v2.py` — PASS: 14,228 Waterfall, baseline and PD checks.
 - `python tests/check_cash_waterfall.py` — PASS: 20,177 cash Waterfall, refinancing and borrowing cap checks.
@@ -22,8 +22,9 @@
 
 ## Model invariants
 
-- Primary PD model: full logistic default for every Monte Carlo year and draw.
-- Anchored sensitivity: exact PD at all 20 rating representative scores, monotone, C1 continuous.
+- Primary PD model: rating-anchored curve (AAA floor, logistic tail below the D threshold) for every Monte Carlo year and draw (`tests/check_pd_rating_smooth.py`).
+- Anchors: exact PD at all 20 rating representative scores, monotone, continuous, floored at 0.02% at or above Z-EM 4.9; below -1.5 a logistic tail rises from 40% (same as rating_tail).
+- Logistic: sensitivity only (`mc_pd_method = "logistic"`).
 - Both outputs share shocks, financial trajectories, EAD and LGD (do not add the two EFC outputs).
 - `Debt Default` indicates debt-service unpaid; MC PD never forcibly becomes 100% because of this flag.
 - No realised-default draws or realised-loss series. P95 reports path distribution of **expected** fiscal costs.

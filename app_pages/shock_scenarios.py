@@ -409,13 +409,14 @@ with gc2:
     )
 with gc3:
     gdp_growth = st.slider("Assumed nominal GDP growth (%/yr)", -5.0, 15.0, config.DEFAULT_GDP_GROWTH * 100, 0.5) / 100.0
-_pdm = {"rating": "Rating bands (at most 40%)", "rating_tail": "Rating bands with a logistic tail (above 40%)", "logistic": "Logistic in Z-EM", "rating_smooth": "Smooth rating-anchored (C1; sensitivity)", "user": "User-specified"}
+_pdm = {"rating": "Rating bands (at most 40%)", "rating_tail": "Rating bands with a logistic tail (above 40%)", "logistic": "Logistic in Z-EM", "rating_smooth": "Rating-anchored curve (AAA floor, logistic tail below D; Monte Carlo default)", "user": "User-specified"}
 pc1, pc2, pc3 = st.columns(3)
 with pc1:
     pd_method = st.selectbox("Probability of default (PD)", list(_pdm), format_func=_pdm.get,
-                             help="Rating bands stop at 40% (rating D). The logistic tail keeps PD rising below the D threshold; logistic applies 1/(1+e^−(a+bZ)) to every Z; user = one PD for every year.")
+                             help="Rating bands stop at 40% (rating D). The logistic tail keeps PD rising below the D threshold (the Monte Carlo rating-anchored curve uses the same tail); logistic applies 1/(1+e^−(a+bZ)) to every Z; user = one PD for every year.")
 with pc2:
-    pd_logit_b = st.slider("Logistic slope b", -3.0, -0.2, float(config.DEFAULT_CASH_SETTINGS["pd_logit_b"]), 0.01, disabled=pd_method not in ("rating_tail", "logistic"))
+    pd_logit_b = st.slider("Logistic slope b", -3.0, -0.2, float(config.DEFAULT_CASH_SETTINGS["pd_logit_b"]), 0.01,
+                             help="Slope of the logistic tail below the D threshold (rating_tail and the Monte Carlo rating-anchored curve) and of the single logistic.")
     pd_logit_a = st.slider("Logistic intercept a", -5.0, 1.0, float(config.DEFAULT_CASH_SETTINGS["pd_logit_a"]), 0.01, disabled=pd_method != "logistic")
 with pc3:
     pd_user = st.slider("User PD (every year)", 0.0, 1.0, float(config.DEFAULT_CASH_SETTINGS["pd_user"]), 0.01, disabled=pd_method != "user")
@@ -784,11 +785,11 @@ else:
             + ') with the standard deviations set here; every other parameter stays at its slider value.</p>', unsafe_allow_html=True,
         )
 
-    mc_method = st.radio("Monte Carlo PD model", ["logistic", "rating_smooth"], horizontal=True,
-                         format_func=lambda x: {"logistic":"Full logistic (default)","rating_smooth":"Smooth rating-anchored (sensitivity)"}[x],
-                         help="The default PD model is a single sigmoid(a+b*Z). The alternative is a monotone C1 logit-spline matching all 20 reference PD anchors, not a single logistic.")
+    mc_method = st.radio("Monte Carlo PD model", ["rating_smooth", "logistic"], horizontal=True,
+                         format_func=lambda x: {"rating_smooth":"Rating-anchored (AAA floor, logistic tail below D; default)","logistic":"Single logistic (sensitivity)"}[x],
+                         help="The default PD model is a monotone C1 curve through all 20 reference rating PDs, floored at 0.02% above the AAA anchor, and below the D anchor (Z-EM −1.5) it keeps rising along a logistic tail from 40% with slope b. The sensitivity is a single sigmoid(a+b*Z), which cannot match every rating PD.")
     params["mc_pd_method"] = mc_method
-    st.info(f"Monte Carlo EFC only: {'Full logistic' if mc_method=='logistic' else 'Smooth rating-anchored sensitivity'} PD, same Monte Carlo shock paths for the comparison. Full logistic a={pd_logit_a:.6f}, b={pd_logit_b:.6f}. EFC = PD × EAD × LGD; no actual-default draws, and missed debt service cannot override Monte Carlo PD. The single-scenario PD selector above is separate.")
+    st.info(f"Monte Carlo EFC only: {'Single logistic (sensitivity)' if mc_method=='logistic' else 'Rating-anchored (AAA floor, logistic tail below D)'} PD, same Monte Carlo shock paths for the comparison. Monte Carlo PD is interpolated in Z-EM between rating band centres: it equals the rating PD at each band centre, rises smoothly between them, and is floored at 0.02% above 4.9; below Z-EM −1.5 (the D threshold) PD keeps rising along a logistic tail from 40% with slope b = {pd_logit_b:.6f}. Deterministic tabs use the rating band PD. Logistic sensitivity a={pd_logit_a:.6f}, b={pd_logit_b:.6f}. EFC = PD × EAD × LGD; no actual-default draws, and missed debt service cannot override Monte Carlo PD. The single-scenario PD selector above is separate.")
     try:
         with st.spinner(f"Running {n_sims} simulations..."):
             mc = shocks.run_monte_carlo(base_row, params, n_sims=n_sims, fuel_std=fuel_std, fx_std=fx_std,
@@ -804,8 +805,8 @@ else:
     p95_efc = mc_final["EFC"].quantile(0.95)
     with st.expander("PD model sensitivity · same Monte Carlo shock draws", expanded=True):
         comp = []
-        for label, col in [("Full logistic", "EFC_Full_Logistic"),
-                           ("Smooth rating-anchored", "EFC_Rating_Anchored")]:
+        for label, col in [("Rating-anchored (default)", "EFC_Rating_Anchored"),
+                           ("Single logistic (sensitivity)", "EFC_Full_Logistic")]:
             comp.append({"Model":label, "Median expected fiscal cost": mc_final[col].median(),
                          "P95 expected fiscal cost": mc_final[col].quantile(0.95)})
         st.dataframe(pd.DataFrame(comp),hide_index=True,use_container_width=True)

@@ -1,4 +1,4 @@
-"""Regression checks of the Monte Carlo full-logistic requirement."""
+"""Regression checks of the single-logistic PD (the Monte Carlo sensitivity, mc_pd_method=logistic)."""
 import sys, pathlib, numpy as np
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
 import config, shocks

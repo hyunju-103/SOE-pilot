@@ -396,8 +396,10 @@
 
         st.STDebt += fBank; st.Payables += fAP; st.LTDebt += fLT;
         st.Recv += dRecv; st.VAT += vat; st.CustArrears += dCust;
-        st.RE += ni;
-        st.Equity += ni + dReval + support + statePay;
+        // the arrears write-down is a non-cash impairment of current assets: it hits equity and retained
+        // earnings in the same year, but not EBIT, net income or the financing need
+        st.RE += ni + dArr;
+        st.Equity += ni + dArr + dReval + support + statePay;
         st.Support += support; st.StateShortfall += statePay;
         for (const k of TIER_KEYS) st[k] += un[k];
         st.Reserve += topUp - rDraw;
@@ -446,9 +448,13 @@
     // the D band: its upper Z bound and PD anchor the logistic tail
     const Z_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], PD_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][3];
     const logistic = (x) => (isNum(x) ? 1 / (1 + Math.exp(-x)) : NaN);
-    // C1 monotone cubic Hermite interpolation in log-odds (PCHIP) with
-    // logit-linear tails. Each of the 20 rating midpoint PDs is an exact anchor.
-    // This is a sensitivity to the full logistic model, not a single logistic.
+    // Logistic tail below the D threshold, the single definition shared by "rating_tail"
+    // and "rating_smooth" (pd_curves.logistic_tail): logistic(logit(pdD) + b (z - zD)).
+    const logisticTail = (z, b, zD, pdD) => logistic(Math.log(pdD / (1 - pdD)) + b * (z - zD));
+    // C1 monotone cubic Hermite interpolation in log-odds (PCHIP) through the 20 rating
+    // midpoint PDs (each an exact anchor), floored at the AAA PD at and above the AAA
+    // anchor; below the D anchor the PD follows logisticTail with slope b.
+    // This is the primary Monte Carlo PD curve (the single logistic is the sensitivity).
     const anchors = CFG.Z_RATING_TABLE.map(([lo,hi,r,pd]) => ({
       x: lo === null ? hi : hi === null ? lo : (lo+hi)/2,
       y: Math.log(pd/(1-pd))
@@ -469,11 +475,12 @@
       const w1=2*hx[i]+hx[i-1],w2=hx[i]+2*hx[i-1];
       return (w1+w2)/(w1/delta[i-1]+w2/delta[i]);
     });
-    function ratingSmooth(z) {
+    function ratingSmooth(z, b) {
       if(!isNum(z)) return NaN;
+      if(!isNum(b)) b=CFG.DEFAULT_CASH_SETTINGS.pd_logit_b;
       const n=anchors.length-1;
-      if(z<=anchors[0].x) return logistic(anchors[0].y+derivatives[0]*(z-anchors[0].x));
-      if(z>=anchors[n].x) return logistic(anchors[n].y+derivatives[n]*(z-anchors[n].x));
+      if(z<anchors[0].x) return logisticTail(z, b, anchors[0].x, logistic(anchors[0].y)); // below the D anchor: logistic tail
+      if(z>=anchors[n].x) return logistic(anchors[n].y);     // AAA floor
       let i=0;while(i<n-1 && z>=anchors[i+1].x)i++;
       const h=hx[i],t=(z-anchors[i].x)/h;
       return logistic((2*t*t*t-3*t*t+1)*anchors[i].y+(t*t*t-2*t*t+t)*h*derivatives[i]
@@ -487,8 +494,8 @@
       if (method === "user") return Math.min(1, Math.max(0, isNum(p.pd_user) ? p.pd_user : 0.1));
       const b = isNum(p.pd_logit_b) ? p.pd_logit_b : -1.17;
       if (method === "logistic") return isNum(z) ? logistic((isNum(p.pd_logit_a) ? p.pd_logit_a : CFG.DEFAULT_CASH_SETTINGS.pd_logit_a) + b * z) : NaN;
-      if (method === "rating_smooth") return ratingSmooth(z);
-      if (method === "rating_tail" && isNum(z) && z < Z_D) return logistic(Math.log(PD_D / (1 - PD_D)) + b * (z - Z_D));
+      if (method === "rating_smooth") return ratingSmooth(z, b);
+      if (method === "rating_tail" && isNum(z) && z < Z_D) return logisticTail(z, b, Z_D, PD_D);
       return pdByRating(rating);
     }
     /** shocks.cumulative_pd */
@@ -653,9 +660,10 @@
      *  o: {n, fuelSd, fxSd, rho, rateSd, revSd, correlations, H, lgd, gdp, seed, eadShare}. With only fuel and FX
      *  drawn, the draws are the same as the original two-variable version for the same seed. */
     function monteCarlo(base, p, o) {
-      // Default full logistic model; optional rating-anchored sensitivity.
-      const mcMethod=p.mc_pd_method || "logistic";
-      if(!["logistic","rating_smooth"].includes(mcMethod)) throw new Error("Invalid MC PD method");
+      // The principal Monte Carlo PD is the rating-anchored curve (rating_smooth);
+      // the single logistic is evaluated on the same draws as a sensitivity.
+      const mcMethod=p.mc_pd_method ? String(p.mc_pd_method) : "rating_smooth";
+      if (mcMethod !== "logistic" && mcMethod !== "rating_smooth") throw new Error("mc_pd_method must be logistic or rating_smooth");
       const mcP = Object.assign({}, p, { pd_method: mcMethod, pd_override_on_missed_service: false });
       const g = rng(o.seed ?? 42), sims = [], n = o.n, H = o.H;
       const corrs = Object.assign({}, o.correlations || {});
@@ -686,7 +694,7 @@
         const path = costPath(runScenario(base, sp, H), o.lgd, o.gdp || null, o.eadShare ?? 1, mcP);
         for(const row of path) {
           row.PD_Full_Logistic=pdValue(row.Z_EM,row.Rating,false,{...mcP,pd_method:"logistic"});
-          row.PD_Rating_Anchored=ratingSmooth(row.Z_EM);
+          row.PD_Rating_Anchored=pdValue(row.Z_EM,row.Rating,false,{...mcP,pd_method:"rating_smooth"});
           row.EFC_Full_Logistic=row.PD_Full_Logistic*row.EAD*row.LGD;
           row.EFC_Rating_Anchored=row.PD_Rating_Anchored*row.EAD*row.LGD;
           row.MC_PD_Model=mcMethod;

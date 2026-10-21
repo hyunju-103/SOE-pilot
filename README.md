@@ -1,6 +1,6 @@
-# Updated final model: Full Logistic PD + rating-anchored sensitivity (2026-10-20)
+# Monte Carlo PD: rating-anchored curve (AAA floor, logistic tail below D), logistic as sensitivity (2026-10-21)
 
-This package retains the original cash Waterfall and EFC-only simulations. **Monte Carlo defaults to a single full logistic** `sigmoid(-2.18031828 - 1.10613960 × Z-EM)` to implement the two-parameter logistic specification. The alternative, **Smooth rating-anchored**, is a continuous C1 logit-PCHIP curve through all 20 reference PD levels; it is *not* a single two-parameter logistic and is provided only as an explicitly labeled sensitivity. Both use the same simulated financial paths; the UI reports final-year median and P95 of expected costs for each. No realised default events are sampled. See [`docs/PD_FINAL_DECISION.md`](docs/PD_FINAL_DECISION.md) and [`docs/VALIDATION_RESULTS.md`](docs/VALIDATION_RESULTS.md). Note: any older sections below describing Monte Carlo as *always* full logistic predate this selectable sensitivity. The **default** remains full logistic.
+This package retains the original cash Waterfall and EFC-only simulations. **Monte Carlo defaults to a rating-anchored PD curve**: a monotone C1 logit-PCHIP interpolation through all 20 reference rating PDs (`mc_pd_method = "rating_smooth"`). Monte Carlo PD is interpolated in Z-EM between rating band centres: it equals the rating PD at each band centre, rises smoothly between them, and is floored at 0.02% above 4.9. Below Z-EM −1.5 (the D threshold) PD keeps rising along a logistic tail from 40% with slope b (`pd_logit_b`, the same tail as `pd_method = "rating_tail"`): about 72% at Z-EM −3 and 99% at −7. Deterministic tabs use the rating band PD. The **single logistic** `sigmoid(-2.02276962 - 0.89133626 × Z-EM)` (uncapped minimax fit, max error 6.50 pp) is kept as a same-draw **sensitivity** (`mc_pd_method = "logistic"`). Both use the same simulated financial paths; the UI headlines the rating-anchored result and reports the logistic median and P95 beside it. No realised default events are sampled. See `docs/PD_FINAL_DECISION.md`.
 
 ---
 
@@ -402,11 +402,13 @@ which the utility borrows to cover.
   - *Probability of default* (`pd_method`, below LGD and EAD): rating bands
     (at most 40%), rating bands with a logistic tail below the D threshold,
     a logistic curve in Z-EM, or a user value for deterministic views.
-    **Monte Carlo:** full logistic PD calibrated to the illustrative rating table
-    for every simulated Z-EM, with EFC = PD × EAD × LGD. No Bernoulli default
+    **Monte Carlo:** rating-anchored PD (a smooth curve through the
+    illustrative rating-table PDs, floored at 0.02% above 4.9 and rising along a logistic
+    tail from 40% with slope b below Z-EM −1.5;
+    single logistic as sensitivity) for every simulated Z-EM, with EFC = PD × EAD × LGD. No Bernoulli default
     events or realised losses are drawn. Monte Carlo does not force PD to 100%
     if debt service is unpaid; deterministic views preserve their former option.
-    See `docs/PD_CALIBRATION.md` and `docs/CHANGES-Full-Logistic-EFC-Only.md`.
+    See `docs/PD_FINAL_DECISION.md` and `docs/PD_CALIBRATION.md`.
   - *Refinancing* (separate assumption, `refinance_share`, 0 = off): in
     `refinance_start_year` (default 1), or later once the previous year's
     rating meets `refinance_min_rating`, that share of the short-term bank debt (the

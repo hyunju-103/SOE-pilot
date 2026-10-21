@@ -31,6 +31,7 @@ Use it three ways:
   * the "HTML version" page in the Streamlit app (preview + download button)
   * from Python:  html = report.build_html(df, lgd_pct=70)
   * from a shell: python report.py --demo --out soe_tool.html
+                  python report.py --demo --allow-download --out SOE-Fiscal-Risk-Final.html   (release build)
                   python report.py --input my_soes.xlsx --lgd 70 --gdp 9.5e12
 """
 
@@ -95,6 +96,7 @@ def config_payload() -> dict:
     out["TEXT_COLUMNS"] = ROW_TEXT_COLUMNS
     out["PROVENANCE_COLUMNS"] = schema.PROVENANCE_COLUMNS
     out["SCHEMA"] = schema.payload()
+    out["PD_CALIBRATION_META"] = config.PD_CALIBRATION_META
     return _json_safe(out)
 
 
@@ -223,6 +225,8 @@ def _main():
     ap.add_argument("--growth", type=float, default=config.DEFAULT_GDP_GROWTH, help="nominal GDP growth, decimal (default 0.03)")
     ap.add_argument("--title", default=config.REPORT_TITLE)
     ap.add_argument("--out", default="soe_fiscal_risk_tool.html")
+    ap.add_argument("--allow-download", action="store_true",
+                    help="enable CSV export and printing (set for the Streamlit release page; a bare viewer frame hides them)")
     ap.add_argument("--fragment", action="store_true", help="write the page body only, without <html>/<head>")
     args = ap.parse_args()
 
@@ -239,7 +243,8 @@ def _main():
         raw, label, example = data_loader.demo_portfolio(), "Illustrative demo portfolio: 8 invented SOEs", True
 
     out = build_html(raw, standalone=not args.fragment, lgd_pct=args.lgd, base_gdp=args.gdp,
-                     gdp_growth=args.growth, title=args.title, data_label=label, is_example=example)
+                     gdp_growth=args.growth, title=args.title, data_label=label, is_example=example,
+                     allow_download=args.allow_download)
     Path(args.out).write_text(out, encoding="utf-8")
     print(f"Wrote {args.out} ({len(out) / 1024:.0f} KB)")
 

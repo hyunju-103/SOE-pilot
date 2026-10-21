@@ -5,12 +5,12 @@ Published interactive snapshot: `SOE-Fiscal-Risk-Final.html` (header restored to
 ## What is published
 
 - Six-stage model journey and redesigned Monte Carlo cards / output layout.
-- Full logistic PD as the default Monte Carlo expected-fiscal-cost calculation.
-- Smooth rating-anchored PD provided as a comparison / sensitivity analysis.
+- Rating-anchored PD (monotone curve through the 20 rating PDs, floored at 0.02% above Z-EM 4.9, with a rising logistic tail from 40% below Z-EM -1.5) as the default Monte Carlo expected-fiscal-cost calculation; deterministic tabs keep the rating band PD.
+- Single logistic PD provided as a same-draw sensitivity.
 - Cash-flow waterfall, correlated fuel / FX and optional interest / revenue shocks.
 - EFC = PD × EAD × LGD. No Bernoulli default events or realised loss draws.
 - Collapsible Monte Carlo controls and extended calibration information.
-- Revised illustrative logistic calibration (prioritises lower maximum reference-rating PD error).
+- Illustrative uncapped minimax logistic calibration for the sensitivity (a -2.02276962, b -0.89133626; max reference-rating PD error 6.50 pp).
 - Existing navigation, upload functionality, KPI, Z-EM, EFC and reporting views retained in the standalone UI.
 - No person-specific names in page copy.
 
@@ -19,30 +19,39 @@ Published interactive snapshot: `SOE-Fiscal-Risk-Final.html` (header restored to
 `Home.py` reads the tracked standalone HTML snapshot if present, and passes it to `components.html`.
 It retains `report.build_app_data()/render_html()` as a fallback if that file is absent.
 The deployed pilot UI therefore uses this exact reviewed HTML snapshot rather than
-silently rebuilding an older version from the Python templates.
+silently rebuilding it at run time.
 
-**Maintenance note:** `templates/` and `config.py` have not been synchronized with
-this reviewed HTML snapshot. Rebuilding via `report.py` alone may yield a different
-UI / calibration. Until sources are synchronized, update and review
-`SOE-Fiscal-Risk-Final.html` for the published pilot interface.
+**Maintenance rule:** `templates/` and `config.py` are synchronised with the published
+snapshot, which is a build product. Edit `templates/` or `config.py`, rebuild with the
+release command below, and commit the regenerated HTML together with the source change.
+Never hand-edit `SOE-Fiscal-Risk-Final.html`.
+
+Release command (run from the repository root):
+
+```
+python report.py --demo --allow-download --out SOE-Fiscal-Risk-Final.html
+```
+
+`tests/check_snapshot_sync.py` rebuilds the page in memory with these settings and fails if
+it differs from the tracked file (only `meta.generated`, the build date, is ignored).
 
 ## Checks
 
-- HTML file content checksum (git blob SHA): `7a5ef140b36c1725b54be1372771fbc16e217a70`.
+- Snapshot integrity: run `python tests/check_snapshot_sync.py` (rebuild equals the tracked HTML, apart from the build date).
 - Inline executable JavaScript passed `node --check`; JSON data scripts excluded from JS syntax checking.
 - The navy title/header and expected-fiscal-cost-only simulation controls were inspected.
 - Actual Streamlit Cloud deployment status and numerical model validation are separate checks.
 
 ## Interpretation
 
-The logistic calibration is illustrative and tied to reference rating PDs, **not** estimated
+The reference rating PDs, and the logistic calibration to them, are illustrative, **not** estimated
 from observed SOE defaults. The displayed P95 EFC is the 95th percentile across simulated
 *expected* costs, **not** an observed government payout or a quantile of realised losses.
 
 ## Monte Carlo, GDP lookup and compact controls (2026-10-20)
 
 - Monte Carlo results use a six-card, two-column arrangement (percentile path and zones; EFC and Z-EM distributions; PD comparison and percentile summary).
-- Cash waterfall and missed-debt-service switches now give conditional effect explanations. The latter is a single-scenario sensitivity and does not override Monte Carlo logistic PD.
+- Cash waterfall and missed-debt-service switches now give conditional effect explanations. The latter is a single-scenario sensitivity and does not override the Monte Carlo PD.
 - Compact On/Off controls no longer stretch to the entire column; the Monte Carlo disclosure is also slimmer.
 - GDP reference lookup: user chooses country and base year, and the browser queries World Bank WDI `NY.GDP.MKTP.CN` (GDP, current local currency, source=2) live. It never invents missing years or an FX conversion.
 - GDP unit selector supports financial-statement units, full LCU, thousands, millions and billions. Results are divided by the uploaded statement unit multiplier before entering the shared GDP state, retaining consistent EFC/GDP ratios.

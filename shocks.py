@@ -112,7 +112,7 @@ import numpy as np
 import pandas as pd
 
 import config
-from pd_curves import anchored_pd
+from pd_curves import anchored_pd, logistic_tail
 from calculations import classify_zem_from_values, compute_pd, compute_pd_from_rating
 
 
@@ -406,8 +406,10 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         state["Receivable"] += d_receivable
         state["TrappedVAT"] += trapped_vat
         state["CustArrears"] += d_cust
-        state["RetainedEarnings"] = state["RetainedEarnings"] + net_income_t
-        state["Equity"] = state["Equity"] + net_income_t + d_equity_fx_reval + support + state_pay
+        # the arrears write-down is a non-cash impairment of current assets: it hits equity and retained
+        # earnings in the same year, but not EBIT, net income or the financing need
+        state["RetainedEarnings"] = state["RetainedEarnings"] + net_income_t + d_current_assets_arrears
+        state["Equity"] = state["Equity"] + net_income_t + d_current_assets_arrears + d_equity_fx_reval + support + state_pay
         state["Support"] += support
         state["StateShortfall"] += state_pay
         for k in _TIER_KEYS:
@@ -509,7 +511,9 @@ def pd_value(z, rating, debt_default, params=None) -> float:
     """PD for one projection year under params["pd_method"]: "rating" (the band
     PD, as before), "rating_tail" (band PDs, and below the D threshold a logistic
     tail that starts at the D band's PD and rises towards 100% with slope
-    pd_logit_b), "logistic" (1 / (1 + exp(-(a + b Z))) for every Z) or "user" (a
+    pd_logit_b), "rating_smooth" (the monotone curve through the 20 rating PDs,
+    floored at the AAA PD, with the same logistic tail below the D threshold),
+    "logistic" (1 / (1 + exp(-(a + b Z))) for every Z) or "user" (a
     fixed annual PD). A year with debt service unpaid takes pd_on_default
     unless pd_override_on_missed_service=False (used by Monte Carlo)."""
     p = params or {}
@@ -522,9 +526,9 @@ def pd_value(z, rating, debt_default, params=None) -> float:
     if method == "logistic":
         return _logistic(_num(p.get("pd_logit_a"), config.DEFAULT_CASH_SETTINGS["pd_logit_a"]) + b * z) if np.isfinite(z) else float("nan")
     if method == "rating_smooth":
-        return anchored_pd(z)
+        return anchored_pd(z, b)
     if method == "rating_tail" and np.isfinite(z) and z < _Z_D:
-        return _logistic(np.log(_PD_D / (1.0 - _PD_D)) + b * (z - _Z_D))
+        return logistic_tail(z, b, _Z_D, _PD_D)
     return compute_pd_from_rating(rating)
 
 
@@ -710,10 +714,10 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
     two-variable version for the same seed.
     Returns a LONG-format DataFrame — one row per (simulation, year),
     containing expected costs only (no random default events or realised losses)."""
-    # Comparison on identical Monte Carlo shocks. Full logistic is the default
-    # for the default model specification; rating_smooth is an explicitly labelled
-    # alternative that matches the rating reference anchor PDs.
-    mc_method = str(params.get("mc_pd_method") or "logistic")
+    # Comparison on identical Monte Carlo shocks. The rating-anchored curve
+    # (rating_smooth) is the default and matches the rating PDs at every band
+    # centre; the single logistic is available as a labelled sensitivity.
+    mc_method = str(params.get("mc_pd_method") or "rating_smooth")
     if mc_method not in ("logistic", "rating_smooth"):
         raise ValueError("mc_pd_method must be logistic or rating_smooth")
     params = dict(params, pd_method=mc_method, pd_override_on_missed_service=False)
@@ -760,7 +764,7 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
         scenario = add_cost(scenario, lgd_pct, ead_share, params)
         # Same shock, balance sheet, EAD and LGD; alternate cost has no extra random draw.
         scenario["PD_Full_Logistic"] = [pd_value(z, r, False, dict(params, pd_method="logistic")) for z,r in zip(scenario["Z_EM"],scenario["Rating"])]
-        scenario["PD_Rating_Anchored"] = [anchored_pd(z) for z in scenario["Z_EM"]]
+        scenario["PD_Rating_Anchored"] = [pd_value(z, r, False, dict(params, pd_method="rating_smooth")) for z, r in zip(scenario["Z_EM"], scenario["Rating"])]
         scenario["EFC_Full_Logistic"] = scenario["PD_Full_Logistic"] * scenario["EAD"] * scenario["LGD"]
         scenario["EFC_Rating_Anchored"] = scenario["PD_Rating_Anchored"] * scenario["EAD"] * scenario["LGD"]
         scenario["MC_PD_Model"] = mc_method

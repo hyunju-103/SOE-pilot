@@ -530,6 +530,10 @@
     S.years = uniq(S.en.map((r) => r.Year)).sort((a, b) => a - b);
     S.names = uniq(S.en.map((r) => r.Entity)).sort();
     S.gdp = key === "report" && M.gdp ? M.gdp : null;
+    S.gdpInputUnit = "statements";
+    S.gdpCountry = "SEN";  // Sensible starting point for SENELEC; user can choose any country.
+    S.gdpResult = null;
+    S.gdpYear = null;
     S.growth = M.gdp_growth ?? CFG.DEFAULT_GDP_GROWTH;
     S.volCache = {};
     initPageState();
@@ -713,6 +717,49 @@
       simpleTable(["Uploaded column", "Mapped to", "Schema key", "Method", "Confidence"], mp.report.map((r) => [r["Uploaded column"], r["Mapped to"] || "—", r["Schema key"] || "—", r.Method, el("td", {}, conf(r.Confidence, r.Method))]), { cls: "compact", tall: mp.report.length > 14 }),
       el("p", { class: "note" }, "High = exact name, Medium = known synonym, Low = close spelling (check it). Unmatched and duplicate columns are kept but not used."));
   }
+
+  /* DESIGN-INTEGRATED METHODOLOGY — HTML, not a flat screenshot */
+  function modelJourney(compact=false) {
+    const steps = [
+      ["01", "SOE financial data", "Financial statements · exposures · government support", "data"],
+      ["02", "Economic shocks", "Fuel · FX · interest rates · revenue", "shock"],
+      ["03", "Cash-flow waterfall", "Cash gap · financing · arrears · new balance sheet", "cash"],
+      ["04", "Continuous PD", "Altman Z-EM → rating-anchored probability", "pd"],
+      ["05", "Expected fiscal cost", "EFC = PD × EAD × LGD", "efc"],
+      ["06", "Monte Carlo", "Correlated draws → median · P95 · distress share", "mc"]
+    ];
+    return el("section", {class:"journey-section"+(compact?" journey-compact":""), "aria-label":"Model calculation framework"},
+      el("div",{class:"journey-heading"},
+        el("div",{},el("span",{class:"journey-kicker"},"MODEL FRAMEWORK"),el("h3",{},"From economic shocks to expected fiscal risk")),
+        el("span",{class:"journey-formula"},"Continuous PD  ·  EFC-only simulation")),
+      el("div",{class:"journey-steps"},steps.map(([n,name,desc,kind])=>
+        el("div",{class:"journey-step journey-"+kind},
+          el("div",{class:"journey-step-head"},el("span",{class:"journey-number"},n),el("b",{},name)),
+          el("p",{},desc)))));
+  }
+  function modelNotes() {
+    const panels=[
+      ["Main assumptions","assume",[
+        "Economic shocks follow user-set distributions and correlations.",
+        "Monte Carlo PD is a smooth curve through the 20 rating-band PDs, as a function of projected Altman Z-EM; deterministic tabs use the rating band PD.",
+        "EAD and LGD are explicit user-controlled exposure and loss assumptions."
+      ]],
+      ["Key limitations","limits",[
+        "PDs come from an illustrative rating table, not observed SOE defaults.",
+        "The 20 reference PDs are an illustrative table; CCC+ and CCC share one PD, so the curve is flat between their centres.",
+        "P95 summarizes expected costs under shock paths, not realized state payouts."
+      ]],
+      ["How to interpret","message",[
+        "Follow the chain: shock → cash gap → financial condition → PD → EFC.",
+        "Compare the single-logistic sensitivity on identical shock draws.",
+        "Use outputs for scenario analysis and fiscal-risk discussion."
+      ]]
+    ];
+    return el("section",{class:"journey-notes","aria-label":"Assumptions and limitations"},
+      panels.map(([heading,kind,parts])=>el("article",{class:"journey-notebox journey-notebox-"+kind},
+        el("h3",{},heading),el("ul",{},parts.map(x=>el("li",{},x))))));
+  }
+
   pages.home = {
     build(root) {
       const H = {};
@@ -732,6 +779,7 @@
         H.more,
         el("h3", { class: "sec-label" }, "Where this tool sits in the SOE fiscal-risk toolkit"), mods,
         el("div", { class: "grid", style: "margin-top:16px" }, el("div", { class: "s7" }, H.dq.root), el("div", { class: "s5" }, H.about.root)),
+        modelNotes(),
       );
       this.buildUpload(H.upload);
       this.buildQuality(H.dq.body);
@@ -1222,14 +1270,175 @@
   /* =====================================================================
      EXPECTED FISCAL COST
      ===================================================================== */
+  /* World Bank World Development Indicators: GDP (current LCU), NY.GDP.MKTP.CN.
+   * GDP raw values are in full local currency units; S.gdp is always kept in
+   * the same numeric scale as the uploaded financial statements (raw / SC).
+   * No FX conversion is guessed, and GDP is applied only after explicit review.
+   */
+  const GDP_UNIT_FACTORS = { statements: null, units: 1, thousand: 1e3, million: 1e6, billion: 1e9 };
+  const GDP_FALLBACK_COUNTRIES = [
+    ["SEN", "Senegal", "West African CFA franc"], ["CIV", "Côte d'Ivoire", "West African CFA franc"],
+    ["GHA", "Ghana", "Ghanaian new cedi"], ["NGA", "Nigeria", "Nigerian naira"],
+    ["CMR", "Cameroon", "Central African CFA franc"], ["KEN", "Kenya", "Kenyan shilling"],
+    ["ZAF", "South Africa", "South African rand"], ["USA", "United States", "U.S. dollar"],
+    ["KOR", "Korea, Rep.", "Korean won"], ["FRA", "France", "Euro"]
+  ];
+  const GDP_CUR_CODE = {
+    "west african cfa franc": "XOF", "cfa franc bceao": "XOF", "central african cfa franc": "XAF",
+    "cfa franc beac": "XAF", "us dollar": "USD", "u.s. dollar": "USD", "united states dollar": "USD",
+    "euro": "EUR", "korean won": "KRW", "ghanaian new cedi": "GHS", "ghanaian cedi": "GHS",
+    "nigerian naira": "NGN", "kenyan shilling": "KES", "south african rand": "ZAR",
+    "japanese yen": "JPY", "pound sterling": "GBP", "british pound": "GBP", "indian rupee": "INR",
+    "canadian dollar": "CAD", "chinese yuan": "CNY", "australian dollar": "AUD",
+  };
+  const gdpUnitSize = (u) => u === "statements" ? SC : (GDP_UNIT_FACTORS[u] || 1);
+  const gdpNumber = (v) => Number(v).toLocaleString("en-US", {maximumFractionDigits: 4});
+  function gdpCurrencyStatus(countryCurrency) {
+    const dst=String(CUR || "").trim().toUpperCase(), local=String(countryCurrency||"").trim().toLowerCase();
+    const wb=GDP_CUR_CODE[local] || null;
+    if (!dst || dst==="LCU" || dst==="LOCAL CURRENCY" || dst==="NATIONAL CURRENCY") return "unknown";
+    if (/^(FCFA|CFA|CFA FRANC)$/.test(dst)) return wb==="XOF" || wb==="XAF" ? "match" : "mismatch";
+    if (dst==="XOF" || dst==="XAF") return dst===wb ? "match" : "mismatch";
+    if (!wb) return "unknown";
+    return dst===wb ? "match" : "mismatch";
+  }
   function gdpField(onChange) {
-    const id = nid("gdp");
-    const inp = el("input", { type: "number", id, min: "0", step: "any", placeholder: "e.g. 9500000000000", value: S.gdp ? String(S.gdp) : "" });
-    const hint = el("small", {}, "Optional. Same currency and units as the statements.");
-    const upd = () => { const v = Number(inp.value); S.gdp = inp.value.trim() && v > 0 ? v / 1 : null; hint.textContent = S.gdp ? `= ${money(S.gdp, true)}` : "Optional. Same currency and units as the statements."; onChange(); };
-    inp.addEventListener("change", upd); inp.addEventListener("input", () => { clearTimeout(inp._t); inp._t = setTimeout(upd, 350); });
-    if (S.gdp) hint.textContent = `= ${money(S.gdp, true)}`;
-    return el("div", { class: "fld" }, el("label", { for: id }, el("span", {}, `Country GDP${CUR ? " (" + CUR + ")" : ""}`, info("Enter nominal GDP to express EFC as a share of GDP. Shared between the Expected Fiscal Cost and Shock Scenarios tabs."))), inp, hint);
+    const id = nid("gdp"), countryId=nid("gdp-country"), yearId=nid("gdp-year"), unitId=nid("gdp-units");
+    const container = el("div", {class:"fld gdp-control"});
+    const label=el("label", {for:id}, el("span", {}, `Country GDP${CUR ? " (" + CUR + ")" : ""}`,
+      info("GDP for fiscal-risk ratios: nominal GDP in the same currency and scale as the SOE statements. World Bank GDP current LCU is full currency units; verify and apply the conversion below.")));
+    const unitOptions = [
+      ["statements", `Same as statements (${(S.rows.find(r=>r.Units)||{}).Units || "full currency units"})`],
+      ["units", "Full local currency units"], ["thousand", "Thousands (10³)"],
+      ["million", "Millions (10⁶)"], ["billion", "Billions (10⁹)"]];
+    const unitSel=el("select", {id:unitId, "aria-label":"GDP input units"},
+      unitOptions.map(([value,t])=>el("option", {value}, t)));
+    unitSel.value=S.gdpInputUnit || "statements";
+    const inp = el("input", {type:"number",id,min:"0",step:"any",placeholder:"Enter GDP, then select units"});
+    const hint = el("small", {}, "GDP is not filled until you select Apply; manual entry is also available.");
+    const countrySel = el("select", {id:countryId,"aria-label":"GDP country"});
+    const yearSel = el("select", {id:yearId,"aria-label":"GDP reference year"});
+    const preview=el("div",{class:"gdp-preview",role:"status","aria-live":"polite"},"Select a country and year to retrieve nominal GDP.");
+    const note=el("div",{class:"gdp-source"},
+      "Source: World Bank WDI · NY.GDP.MKTP.CN · ",
+      el("a",{href:"https://data.worldbank.org/indicator/NY.GDP.MKTP.CN",target:"_blank",rel:"noopener noreferrer"},"GDP (current LCU)"));
+    const confirmLabel=el("label",{class:"gdp-confirm"},
+      el("input",{type:"checkbox"}),
+      el("span",{},"I confirm that the selected country's GDP is in the same currency as my financial statements."));
+    confirmLabel.hidden=true;
+    const confirm=confirmLabel.querySelector("input");
+    const apply=el("button",{type:"button",class:"btn",disabled:true},"Apply GDP to model");
+    const unitLabel=el("label",{for:unitId,class:"unit-label"},"GDP input / displayed units");
+    const manual=el("div",{class:"gdp-manual"},unitLabel,unitSel,inp,hint);
+    const countryWrap=el("label",{},"Country",countrySel),yearWrap=el("label",{},"Year",yearSel);
+    const lookup=el("div",{class:"gdp-lookup"},
+      el("div",{class:"gdp-lookup-label"},"Look up nominal GDP · World Bank"),
+      el("div",{class:"gdp-lookup-grid"},countryWrap,yearWrap),preview,confirmLabel,apply,note);
+    container.append(label,lookup,manual);
+    let fetched=null, fetchId=0, countries=GDP_FALLBACK_COUNTRIES;
+    function showInput(){inp.value = S.gdp ? String(Number((S.gdp*SC/gdpUnitSize(unitSel.value)).toPrecision(12))) : "";}
+    function showHint(){
+      hint.textContent=S.gdp ? `Applied: ${gdpNumber(S.gdp)} in financial-statement units (${CUR || "LCU"}) · ${gdpNumber(S.gdp*SC)} full units`:
+        `Enter nominal GDP in the selected units. The model uses ${((S.rows.find(r=>r.Units)||{}).Units||"full units")} (${CUR||"LCU"}).`;
+    }
+    showInput();showHint();
+    const currentYear=new Date().getFullYear();
+    const defaultYr=String(S.gdpYear || (S.tab==="efc" ? S.efc?.year : S.sh?.year) || last(S.years) || currentYear-1);
+    for(let yr=currentYear;yr>=1960;yr--)yearSel.appendChild(el("option",{value:String(yr)},String(yr)));
+    yearSel.value=defaultYr;
+    const fillCountries=()=>{
+      const prev=countrySel.value || S.gdpCountry || "SEN";
+      countrySel.replaceChildren(...countries.map(([code,name])=>el("option",{value:code},name)));
+      countrySel.value=countries.some(c=>c[0]===prev)?prev:"SEN";
+      if(!countrySel.value)countrySel.selectedIndex=0;
+    };
+    fillCountries();
+    function validate(){
+      const c=GDP_FALLBACK_COUNTRIES.find(c=>c[0]===countrySel.value);
+      const selected=countries.find(c=>c[0]===countrySel.value)||c;
+      const currency=selected?.[2]||"";
+      const status=gdpCurrencyStatus(currency);
+      const sameYear=Number(yearSel.value)===Number((S.tab==="efc"?S.efc?.year:S.sh?.year)||yearSel.value);
+      confirmLabel.hidden=status==="match";
+      apply.disabled=!fetched || !Number.isFinite(fetched.value) || fetched.value<=0 || status==="mismatch" ||
+        (status==="unknown" && !confirm.checked) || !sameYear;
+      if(status==="mismatch")return `Currency mismatch: GDP is ${currency||"country LCU"}, but statements are ${CUR}. No automatic FX conversion is performed.`;
+      if(!sameYear)return `Reference year differs from the selected ${S.tab==="efc"?"EFC":"Shock Scenario"} base year; match the years before applying.`;
+      if(status==="unknown")return `Currency is not verified against statements (${CUR||"unknown"}). Confirm the match before applying.`;
+      return `Currency checked: ${currency||"country LCU"} aligns with statements (${CUR}).`;
+    }
+    function renderPreview(){
+      if(!fetched)return;
+      const unit=unitOptions.find(([k])=>k===unitSel.value)?.[1] || "LCU";
+      const countryName=countries.find(c=>c[0]===countrySel.value)?.[1]||countrySel.value;
+      const n=fetched.value/gdpUnitSize(unitSel.value);
+      const status=validate();
+      preview.replaceChildren(el("b",{},`${countryName}, ${yearSel.value}: ${gdpNumber(n)}`),
+        el("span",{},` (${unit}) · ${gdpNumber(fetched.value)} full local currency units.`),
+        el("div",{style:"margin-top:3px"},status));
+    }
+    async function lookupGDP(){
+      fetched=null;confirm.checked=false;confirmLabel.hidden=true;apply.disabled=true;
+      const req=++fetchId,country=countrySel.value,year=yearSel.value;
+      if(!country || !year)return;
+      preview.textContent=`Looking up ${country} GDP for ${year}…`;
+      // World Bank Indicators API: country / year scoped, with no gap filling or imputed numbers.
+      const url=`https://api.worldbank.org/v2/country/${encodeURIComponent(country)}/indicator/NY.GDP.MKTP.CN?date=${encodeURIComponent(year)}&format=json&source=2`;
+      try{
+        const response=await fetch(url,{headers:{Accept:"application/json"}});
+        if(!response.ok)throw Error("World Bank API status "+response.status);
+        const data=await response.json();
+        if(req!==fetchId || !container.isConnected)return;
+        const value=Array.isArray(data)&&Array.isArray(data[1]) ? data[1].find(r=>r && r.date===year && Number.isFinite(r.value)) : null;
+        if(!value){preview.textContent=`World Bank has no reported GDP (current LCU) for ${country}, ${year}. Choose another year or enter GDP manually.`;return;}
+        fetched={value:Number(value.value),url,country,year};
+        S.gdpResult={value:fetched.value,source:"World Bank · NY.GDP.MKTP.CN",country,year};
+        renderPreview();
+      }catch(err){
+        if(req!==fetchId || !container.isConnected)return;
+        preview.textContent="Automatic GDP lookup is unavailable (network or API). You can still enter a verified value manually.";
+      }
+    }
+    countrySel.addEventListener("change",()=>{S.gdpCountry=countrySel.value;lookupGDP();});
+    yearSel.addEventListener("change",()=>{S.gdpYear=yearSel.value;lookupGDP();});
+    confirm.addEventListener("change",renderPreview);
+    apply.addEventListener("click",()=>{
+      if(apply.disabled || !fetched || fetched.country!==countrySel.value || fetched.year!==yearSel.value)return;
+      // The manual input's units determine the display; S.gdp always uses statement scale.
+      S.gdp=fetched.value/SC;
+      showInput();showHint();
+      onChange();
+    });
+    unitSel.addEventListener("change",()=>{
+      S.gdpInputUnit=unitSel.value;
+      showInput();showHint();renderPreview();
+    });
+    const manualChange=()=>{
+      const value=Number(inp.value);
+      S.gdp=inp.value.trim()&&Number.isFinite(value)&&value>0 ? value*gdpUnitSize(unitSel.value)/SC : null;
+      S.gdpResult=null;
+      showHint();
+      onChange();
+    };
+    inp.addEventListener("change",manualChange);
+    inp.addEventListener("input",()=>{clearTimeout(inp._t);inp._t=setTimeout(manualChange,450);});
+    // Populate all supported World Bank countries; preloaded fallback works offline.
+    (async()=>{
+      try{
+        const res=await fetch("https://api.worldbank.org/v2/country?format=json&per_page=400");
+        if(!res.ok)throw Error("Country directory unavailable");
+        const j=await res.json();
+        if(!container.isConnected || !Array.isArray(j)||!Array.isArray(j[1]))return;
+        const loaded=j[1].filter(c=>c?.region?.value!=="Aggregates" && /^[A-Z]{3}$/.test(c.id||""))
+          .map(c=>[c.id,c.name,c.currencyUnit||""]).sort((a,b)=>a[1].localeCompare(b[1]));
+        if(loaded.length<80)return;
+        countries=loaded;fillCountries();
+        // Country metadata provides the precise WB local currency label.
+        if(fetched)renderPreview();
+      }catch(err){} // compact fallback selector remains available.
+    })();
+    lookupGDP();
+    return container;
   }
   pages.efc = {
     build(root) {
@@ -1346,7 +1555,7 @@
   const wfOrderItems = (q) => Object.keys(WF_TIER).filter((k) => (k !== "om_floor" || (q.om_floor_share || 0) > 0) && (k !== "junior" || (q.junior_share || 0) > 0) && (k !== "reserve" || (q.reserve_months || 0) > 0));
   const WF_TIER_SET = { statutory: "Rank: taxes, operator", ipp: "Rank: IPPs", fuel: "Rank: fuel and gas", debt: "Rank: debt service", reserve: "Rank: reserve", om_floor: "Rank: O&M floor", residual: "Rank: residual" };
   const WF_RULES = [["soe", "The SOE (own costs above the floor first)"], ["junior", "Junior creditors first"], ["pro_rata", "The SOE and junior creditors pro rata"], ["state", "The State pays it"]];
-  const PD_METHODS = [["rating", "Rating bands (at most 40%)"], ["rating_tail", "Rating bands with a logistic tail (above 40%)"], ["logistic", "Logistic in Z-EM"], ["rating_smooth", "Smooth rating-anchored (C1; sensitivity)"], ["user", "User-specified"]];
+  const PD_METHODS = [["rating", "Rating bands (at most 40%)"], ["rating_tail", "Rating bands with a logistic tail (above 40%)"], ["logistic", "Logistic in Z-EM"], ["rating_smooth", "Rating-anchored curve (AAA floor, logistic tail below D; Monte Carlo default)"], ["user", "User-specified"]];
   // arrears columns by tier: [rank key, path column, short label]
   const WF_COLS = [["statutory", "Arrears to Statutory and Operator", "Taxes, operator"], ["ipp", "Arrears to IPPs", "IPPs"], ["fuel", "Arrears to Fuel Suppliers", "Fuel"], ["debt", "Missed Debt Service", "Debt service"],
     ["om_floor", "Arrears on O&M Floor", "O&M floor"], ["ops", "Arrears on Own Operations", "Own operations"], ["junior", "Arrears to Junior Creditors", "Junior creditors"]];
@@ -1471,7 +1680,7 @@
         el("div", { class: "foot" },
           el("div", {}, el("b", {}, "Simplifications. "), "Tax expense is held flat; net income carries the reported figure plus the shock's effect on EBIT and interest; any cash shortfall (losses, unpaid State compensation, trapped VAT) is paid first from the SOE's opening cash where the file reports it (above the floor on the Cash & financing tab), and the rest is borrowed — in current liabilities for the short-term share, otherwise as long-term debt; a later surplus repays short-term debt, then rebuilds the cash drawn; operating expense and revenue are held at base-year values."),
           el("div", {}, el("b", {}, "Cash waterfall, refinancing and emergency support. "), "With the cash waterfall on (Cash & financing tab), the routed share of the SOE's cash (coverage × compliance × ramp-up) is paid out in the country order chosen there: taxes, levies and the operator fee; IPPs and fuel (pari passu or in either order); senior debt service and a reserve; the SOE's O&M floor; then its other costs and junior creditors. Tiers with the same rank share pro rata to their bills. The waterfall creates no cash: after the SOE's own cash, the routed shortfall is not borrowed but left unpaid from the lowest rank up — or paid by the State under that shortfall rule — as current liabilities that carry the late-payment interest set on the tab. A year that ends with debt service unpaid is rated D (optional). A later surplus pays the arrears in priority order and tops up the reserve; cash outside the waterfall is borrowed as before. Refinancing is a separate assumption: the chosen share of short-term bank debt is replaced by long-term loans in the start year, or later once the rating reaches the minimum set — current liabilities fall, total liabilities do not, and the rate difference is saved every year. The no-shock path uses the same policies, so the comparison isolates the shock; the Liquidity card compares the stressed path with and without the waterfall. With a borrowing cap, new borrowing stops where total liabilities would pass that share of total assets and the government injects the rest as equity (emergency support, a direct budget cost)."),
-          el("div", {}, el("b", {}, "Tariffs, collections and PD. "), "The cost-recovery ratio (Tariffs & collections tab) resets customer revenue to that share of full cost; the State compensates the share of the change set there, recognised in revenue and paid in cash at the in-year paid share. Uncollected customer bills become customer arrears, a current asset the SOE funds like any other cash gap. Demand growth scales sales and cash costs together; higher losses cut customer revenue at the same cost. In single-scenario views PD follows the selected rating bands, logistic tail, full logistic, or user method; Monte Carlo always uses a calibrated full logistic curve for expected fiscal cost (PD × EAD × LGD) without drawing actual defaults."),
+          el("div", {}, el("b", {}, "Tariffs, collections and PD. "), "The cost-recovery ratio (Tariffs & collections tab) resets customer revenue to that share of full cost; the State compensates the share of the change set there, recognised in revenue and paid in cash at the in-year paid share. Uncollected customer bills become customer arrears, a current asset the SOE funds like any other cash gap. Demand growth scales sales and cash costs together; higher losses cut customer revenue at the same cost. In single-scenario views PD follows the selected rating bands, logistic tail, full logistic, or user method; Monte Carlo uses the bounded rating-anchored PD curve for expected fiscal cost (PD × EAD × LGD) without drawing actual defaults."),
           el("div", {}, el("b", {}, "Fuel cost split. "), "The fuel-cost change is fuel share × oil linkage × operating expense × the fuel price shock — the slider for the shock years, or the year's value of the fuel price path when one is set (the tariff increase then applies in the path's non-zero years). A tariff increase (policy Option B) is applied first. What is left of the fuel-cost change is shared between customers (tariff pass-through, Case B), the government (compensation share, Case C) and the SOE (the rest, Case A). Government compensation is recognised as revenue when due but arrives as cash only at the in-year paid share; the rest is a receivable on the State."),
           el("div", {}, el("b", {}, "Monte Carlo. "), "Fuel and FX shock magnitudes are always drawn from a correlated normal distribution around their sliders (with a fuel price path, fuel is drawn around the path's peak and each draw rescales the whole path); the interest-rate and revenue shocks are drawn too when their standard deviation is above zero, with the correlations you set. Every other parameter stays at its slider value. The seed is fixed, so identical settings reproduce identical results.")));
       this.fuelCheck();
@@ -1533,12 +1742,16 @@
         sl2("Default interest: missed debt service", "late_rate_debt", 0, 0.25, 0.005, rate, "Default interest on debt service not paid on time. Placeholder: set from the loan documents."),
         sl2("Late-payment interest: other tiers", "late_rate_other", 0, 0.2, 0.005, rate, "Taxes, the SOE's own costs, other suppliers and regulators."),
         el("div", { class: "fld" }, el("span", { class: "lbl" }, "Treat missed debt service as default (single-scenario sensitivity only)", info("On: a year that ends with debt service unpaid is rated D, and its PD is the PD on default set below the panel (100% by default). Off: the rating follows Z-EM only.")),
-          seg([[0, "Off"], [1, "On"]], (ok(e.default_on_missed_debt) ? e.default_on_missed_debt : 0) > 0 ? 1 : 0, (v) => { e.default_on_missed_debt = v; this.schedule(); }, "Treat missed debt service as default (single-scenario sensitivity only)")),
+          seg([[0, "Off"], [1, "On"]], (ok(e.default_on_missed_debt) ? e.default_on_missed_debt : 0) > 0 ? 1 : 0, (v) => { e.default_on_missed_debt = v; this.schedule(); }, "Treat missed debt service as default (single-scenario sensitivity only)"),
+          el("div", { class: "switch-effect-note", "data-debt-switch-note": "", role: "status", "aria-live": "polite" })),
         head("Behaviour", "Scenario parameters, not observed values: test them as sensitivities."),
         sl2("Supplier response: price cut for priority", "priority_discount", 0, 0.1, 0.005, rate, "Share of the IPP and fuel bills that priority creditors give back (lower prices or longer credit) in return for being paid first. Scales with the routed share. 0 = no response."),
         sl2("State response: extra compensation paid in-year", "state_paid_uplift", 0, 1, 0.05, (v) => (v > 0 ? "+" + pct0(v) : "none"), "Rise in the in-year paid share of State compensation while the waterfall is in force (times the routed share); +30% takes 60% to 90%. A waterfall can lock in payments but not the State's fiscal capacity, so 0 is the cautious case."),
         el("p", { class: "note", style: "margin:0" }, el("b", {}, "Moral hazard "), "(priority creditors monitoring less, junior stakeholders delaying investment) is not modelled directly: test it with lower compliance and a smaller O&M floor."));
       const sw = seg([[0, "Off"], [1, "On"]], on ? 1 : 0, (v) => { e.waterfall_on = v; rebuild(); }, "Cash waterfall"); // rebuild: the preset button shows the state too
+      const wfNote = this.H.wfEffectNote = el("div", { class: "switch-effect-note", role: "status", "aria-live": "polite" });
+      this.H.debtEffectNote = wfBox.querySelector("[data-debt-switch-note]");
+      wfNote.textContent = on ? "Waterfall is ON. The indicator below explains which payment effects appear in this scenario." : "Waterfall is OFF: cash gaps follow ordinary cash-first financing / borrowing.";
       const refiBox = el("div", { class: "fields" },
         fSlider("Short-term bank debt refinanced", { min: 0, max: 1, step: 0.05, value: e.refinance_share || 0, fmt: pct0, id: "sh-refinance_share",
           info: CFG.GLOSSARY.Refinancing + " Replaced in the first projection year; it leaves current liabilities, so working capital (X1) improves, and total liabilities do not change. 0% = off." },
@@ -1555,7 +1768,7 @@
           { info: "Lenders refinance only once the SOE's rating (previous year, Z-EM based) reaches this level. None = no condition." }));
       return [
         el("hr", { class: "divider" }),
-        el("div", { class: "fld" }, el("span", { class: "lbl" }, "Cash waterfall (priority of payments)", info(CFG.GLOSSARY["Cash waterfall"])), sw),
+        el("div", { class: "fld" }, el("span", { class: "lbl" }, "Cash waterfall (priority of payments)", info(CFG.GLOSSARY["Cash waterfall"])), sw, wfNote),
         wfBox,
         el("hr", { class: "divider" }),
         el("div", { class: "fld" }, el("span", { class: "lbl" }, "Refinancing (separate assumption)", info(CFG.GLOSSARY.Refinancing))),
@@ -1608,10 +1821,10 @@
     /** probability of default: method, parameters and the PD on a missed debt payment (below LGD / EAD) */
     pdFields() {
       // Avoid offering deterministic rating/default controls while the user is viewing
-      // Monte Carlo: those controls do not affect its full-logistic/EFC-only model.
+      // Monte Carlo: those controls do not affect its rating-anchored EFC-only model.
       if (S.sh.view === "mc") return [el("div", {class:"mc-pd-side-note"},
-        el("b",{},"Monte Carlo PD: full logistic"),
-        el("small",{},"Uses each simulated Z-EM, with no 40% rating ceiling and no realised-default draws. See the comparison on the right."))];
+        el("b",{},"Monte Carlo PD: rating-anchored"),
+        el("small",{},"Uses each simulated Z-EM on a smooth curve through the rating band PDs (40% at Z-EM −1.5, rising along a logistic tail below it; floored at 0.02% at 4.9 and above); no realised-default draws. The single logistic is shown as a sensitivity."))];
       const e = S.sh.expo, m = e.pd_method || "rating";
       const ex = el("small", {});
       const showEx = () => {
@@ -1622,11 +1835,11 @@
       const sl2 = (label, k, mn, mx, step, f, help) => fSlider(label, { min: mn, max: mx, step, value: ok(e[k]) ? e[k] : CFG.DEFAULT_CASH_SETTINGS[k], fmt: f, id: "sh-" + k, info: help }, (v) => { e[k] = v; showEx(); this.schedule(); });
       return [
         fSelect("Probability of default (PD)", PD_METHODS, m, (v) => { e.pd_method = v; rebuild(); },
-          { info: "Rating bands: PD by Z-EM rating, at most 40% (rating D). Logistic tail: the same bands, but below the D threshold (Z-EM " + fmt(CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], 1) + ") PD keeps rising along a logistic curve from 40% towards 100%. Logistic: PD = 1 / (1 + e^−(a + b·Z)) for every Z. User: one PD for every year. This selector controls single-scenario views; Monte Carlo always uses full logistic PD for expected fiscal cost." }),
-        m === "rating_tail" || m === "logistic" ? sl2("Logistic slope b", "pd_logit_b", -3, -0.2, 0.01, (v) => fmt(v, 2), "How fast PD rises as Z-EM falls (negative). Calibrated against the current illustrative rating table; update with observed defaults when available.") : null,
+          { info: "Rating bands: PD by Z-EM rating, at most 40% (rating D). Logistic tail: the same bands, but below the D threshold (Z-EM " + fmt(CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], 1) + ") PD keeps rising along a logistic curve from 40% towards 100%. Logistic: PD = 1 / (1 + e^−(a + b·Z)) for every Z. User: one PD for every year. This selector controls single-scenario views; Monte Carlo uses the rating-anchored PD curve (AAA floor, logistic tail below the D threshold) for expected fiscal cost." }),
+        sl2("Logistic slope b", "pd_logit_b", -3, -0.2, 0.01, (v) => fmt(v, 2), "How fast PD rises as Z-EM falls (negative). Sets the logistic tail below the D threshold (single-scenario \"logistic tail\" and the Monte Carlo rating-anchored curve) and the single logistic sensitivity. Calibrated against the current illustrative rating table; update with observed defaults when available."),
         m === "logistic" ? sl2("Logistic intercept a", "pd_logit_a", -5, 1, 0.01, (v) => fmt(v, 2), "Log-odds of default at Z-EM = 0. Calibrated against the existing rating PD table; methodological details in docs/PD_CALIBRATION.md.") : null,
         m === "user" ? sl2("PD (every year)", "pd_user", 0, 1, 0.01, pctAuto, "A PD set by the user, applied to every projection year.") : null,
-        el("div", { class: "fld" }, el("span", { class: "lbl" }, "PD in a year with debt service missed", info("Single-scenario views only: when debt service is unpaid, the year is rated D and its PD can be overridden. Monte Carlo always uses full logistic PD with no override or actual default draws.")),
+        el("div", { class: "fld" }, el("span", { class: "lbl" }, "PD in a year with debt service missed", info("Single-scenario views only: when debt service is unpaid, the year is rated D and its PD can be overridden. Monte Carlo uses its own PD curve with no override or actual default draws.")),
           seg([[1, "100%"], [0.4, "40%"]], (ok(e.pd_on_default) ? e.pd_on_default : 1) >= 1 ? 1 : 0.4, (v) => { e.pd_on_default = v; this.schedule(); }, "PD on default")),
         ex,
       ].filter(Boolean);
@@ -1684,7 +1897,7 @@
       const rating = (z) => E.pdValue(z, E.zRating(z), false, {pd_method:"rating"});
       const zw = [-4,-3,-2,-1,0,1,2,3,4,5], xlo=-5, xhi=5, W=720, ht=244, L=55, R=22, T=14, B=35;
       const x=(z)=>L+(z-xlo)/(xhi-xlo)*(W-L-R), y=(pd)=>ht-B-pd*(ht-B-T);
-      const svg=svgEl("svg",{viewBox:`0 0 ${W} ${ht}`,width:"100%",role:"img", "aria-label":"Full logistic PD is continuous, whereas rating-band PD is a staircase with a 40 percent ceiling"});
+      const svg=svgEl("svg",{viewBox:`0 0 ${W} ${ht}`,width:"100%",role:"img", "aria-label":"Rating-anchored PD is continuous, floored at the AAA PD and rising along a logistic tail below the D threshold, the single logistic is a sensitivity, and rating-band PD is a staircase with a 40 percent ceiling"});
       [0,.2,.4,.6,.8,1].forEach((v)=>{
         svgEl("line",{x1:L,x2:W-R,y1:y(v),y2:y(v),class:"grid-l"},svg);
         txt(svg,L-8,y(v),fmt(v*100,0)+"%","t-muted num","end",10.5);
@@ -1692,7 +1905,7 @@
       zw.forEach(z=>txt(svg,x(z),ht-14,z.toString(),"t-muted num","middle",10.5));
       const pts=[];for(let k=0;k<=250;k++){const z=xlo+k*(xhi-xlo)/250;pts.push((k?"L":"M")+x(z).toFixed(2)+","+y(pred(z)).toFixed(2));}
       svgEl("path",{d:pts.join(""),class:"pd-curve-logistic"},svg);
-      const pts2=[];for(let k=0;k<=250;k++){const z=xlo+k*(xhi-xlo)/250;const v=E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth"});pts2.push((k?"L":"M")+x(z).toFixed(2)+","+y(v).toFixed(2));}
+      const pts2=[];for(let k=0;k<=250;k++){const z=xlo+k*(xhi-xlo)/250;const v=E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth",pd_logit_b:b});pts2.push((k?"L":"M")+x(z).toFixed(2)+","+y(v).toFixed(2));}
       svgEl("path",{d:pts2.join(""),class:"pd-curve-smooth"},svg);
       // A staircase, not a smoothed line: show that the prior rating approach has jumps.
       const boundaries=[xlo,...CFG.Z_RATING_TABLE.flatMap(v=>[v[0],v[1]]).filter(z=>ok(z)&&z>xlo&&z<xhi),xhi].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a-b);
@@ -1702,13 +1915,19 @@
       }
       svgEl("path",{d,class:"pd-curve-rating"},svg);
       svgEl("line",{x1:L,x2:W-R,y1:y(.4),y2:y(.4),class:"pd-reference"},svg);
-      txt(svg,W-R-4,y(.4)-8,"40% rating ceiling","t-muted","end",10);
+      txt(svg,W-R-4,y(.4)-8,"40% rating-band ceiling","t-muted","end",10);
       H.pdChart.replaceChildren(svg);
-      const anchors=[[-3,"Severe distress"],[-1.5,"D threshold"],[-.4,"CCC midpoint"],[.225,"CCC+ midpoint"],[.7,"B- midpoint"],[2.8,"BBB midpoint"]];
-      const diffs=anchors.map(([z])=>Math.abs(pred(z)-rating(z)));
-      H.pdLead.textContent=`Full logistic: PD = sigmoid(${fmt(a,4)} ${b<0?"−":"+"} ${fmt(Math.abs(b),4)} × Z-EM). Selected calibration is illustrative, fitted to reference rating PDs; it is not validated against observed defaults. It produces PD ${pctAuto(pred(-3))} at Z-EM −3 versus 40% under the rating ceiling.`;
-      const smooth=(z)=>E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth"});
-      H.pdTable.replaceChildren(simpleTable(["Z-EM","Rating band PD","Full logistic PD","Smooth anchored PD","Logistic − rating"],anchors.map(([z,label])=>[`${fmt(z,3)} · ${label}`,pct(rating(z),2),pct(pred(z),2),pct(smooth(z),2),`${sgn((pred(z)-rating(z))*100,2)} pp`]),{right:i=>i>0,cls:"compact"}));
+      const ratingAnchors = CFG.Z_RATING_TABLE.map(([lo,hi,name,ref]) => ({
+        z: lo===null ? hi : hi===null ? lo : (lo+hi)/2,
+        name, ref
+      }));
+      const errors = ratingAnchors.map(r=>Math.abs((pred(r.z)-r.ref)*100));
+      const maxError=Math.max(...errors), mae=errors.reduce((a,b)=>a+b,0)/errors.length;
+      const smooth=(z)=>E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth",pd_logit_b:b});
+      const smoothMax=Math.max(...ratingAnchors.map(r=>Math.abs((smooth(r.z)-r.ref)*100)));
+      const zLo=ratingAnchors.reduce((m,r)=>Math.min(m,r.z),Infinity), zHi=ratingAnchors.reduce((m,r)=>Math.max(m,r.z),-Infinity);
+      H.pdLead.textContent=`Monte Carlo PD: rating-anchored curve through the ${ratingAnchors.length} reference rating PDs (monotone interpolation of log-odds in Z-EM); ${smoothMax<1e-9?"exact at all "+ratingAnchors.length+" band centres":"maximum absolute difference at the band centres "+fmt(smoothMax,2)+" pp"}. Floored at ${pct(smooth(zHi+1),2)} above Z-EM ${fmt(zHi,1)}; below Z-EM ${fmt(zLo,1)} (the D threshold) PD keeps rising along a logistic tail from ${pct(smooth(zLo),0)} with slope b = ${fmt(b,3)} (${pct(smooth(zLo-1.5),0)} at Z-EM ${fmt(zLo-1.5,1)}). Sensitivity: single logistic PD = sigmoid(${fmt(a,5)} ${b<0?"−":"+"} ${fmt(Math.abs(b),5)} × Z-EM), minimax fit, maximum absolute difference ${fmt(maxError,2)} pp, mean ${fmt(mae,2)} pp. Reference PDs are illustrative; not validated against observed SOE defaults.`;
+      H.pdTable.replaceChildren(simpleTable(["Rating","Representative Z-EM","Reference PD","Rating-anchored PD (Monte Carlo)","Logistic PD (sensitivity)","Logistic difference (pp)"],ratingAnchors.map(r=>[r.name,fmt(r.z,3),pct(r.ref,3),pct(smooth(r.z),3),pct(pred(r.z),3),sgn((pred(r.z)-r.ref)*100,3)]),{right:i=>i>0,cls:"compact"}));
     },
     buildMC() {
       const st = S.sh.mc, H = this.H;
@@ -1730,8 +1949,6 @@
         sdSlider("Interest-rate shock std. dev.", "rsd", { min: 0, max: 500, step: 25, fmt: (v) => (v ? fmt(v, 0) + " bps" : "off") }, "Spread of the interest-rate shock, centred on the rate slider. 0 = not drawn (held at the slider value)."),
         sdSlider("Revenue shock std. dev.", "vsd", { min: 0, max: 2, step: 0.1, fmt: (v) => (v ? fmt(v, 1) + " s.d." : "off") }, "Spread of the revenue shock in standard deviations of this SOE's own revenue growth, centred on the revenue slider. 0 = not drawn."));
       drawCorr();
-      H.mcMethodSelect = fSelect("Monte Carlo PD model", [["logistic","Full logistic (default)"], ["rating_smooth","Smooth rating-anchored (sensitivity)"]], st.pdmodel || "logistic", (v) => {st.pdmodel=v;this.schedule();},
-        {info:"Full logistic is a two-parameter sigmoid model. Smooth rating-anchored is a C1 monotone logit-spline through the 20 reference PD levels, provided as a sensitivity rather than a replacement for the full logistic."});
       H.pdLead = el("p", {class:"note",style:"margin:0 0 12px"});
       H.pdChart = el("div",{class:"pd-comparison-chart"});
       H.pdTable = el("div");
@@ -1739,38 +1956,55 @@
       const more = el("details",{class:"mc-advanced"},
         el("summary",{},"Rating PD comparison and calibration details"),
         H.pdChart,
-        el("div",{class:"pd-chart-legend"},el("span",{class:"legend-key pd-logistic-key"},"Full logistic"),el("span",{class:"legend-key pd-smooth-key"},"Smooth anchored"),el("span",{class:"legend-key pd-rating-key"},"Original rating steps")),
+        el("div",{class:"pd-chart-legend"},el("span",{class:"legend-key pd-smooth-key"},"Rating-anchored (Monte Carlo)"),el("span",{class:"legend-key pd-logistic-key"},"Single logistic (sensitivity)"),el("span",{class:"legend-key pd-rating-key"},"Rating band steps (deterministic)")),
         H.pdTable,
-        el("p",{class:"note"},"The full logistic is a two-parameter curve and cannot exactly fit all 20 levels. The smooth anchored sensitivity is C1-continuous and exactly matches the reference rating PDs at their representative scores, but is not a single logistic. Neither has been validated against actual default histories."));
-      const pdBox=card("PD model · Monte Carlo", "Full logistic is the default; the anchored smooth sensitivity is a different mathematical model. Both use identical shocks when compared.");
-      // The dropdown is the single source of truth for the selected PD model;
-      // keep method metadata separated from it, without a redundant 'default' badge.
-      pdBox.body.append(el("div", {class:"mc-pd-select"}, H.mcMethodSelect),
-        el("div",{class:"mc-model-summary",role:"note","aria-label":"Monte Carlo risk calculation scope"},
-          el("span",{class:"mc-pill"},"Expected fiscal cost only"),
-          el("span",{class:"mc-pill"},"No realised-default draws")),
-        H.pdLead,H.pdSensitivity,more);
+        el("p",{class:"note"},"Sensitivity: the two-parameter logistic is fitted by minimizing the largest absolute percentage-point gap across the 20 representative rating anchors, so it cannot reproduce every reference PD. Neither curve is fitted to real SOE default histories."));
+      const pdBox=card("PD model · Monte Carlo", "Headline EFC uses the rating-anchored PD curve (floored at the AAA PD, rising logistic tail below the D threshold); the single logistic is shown as a sensitivity under identical shocks.");
+      pdBox.body.append(el("div",{class:"mc-model-summary"},
+        el("span",{class:"mc-pill"},"Rating-anchored · default"),el("span",{class:"mc-pill"},"EFC only"),
+        el("span",{class:"mc-pill"},"No actual default draws")),H.pdLead,el("p",{class:"note",style:"margin:0 0 12px"},"Monte Carlo PD is interpolated in Z-EM between rating band centres: it equals the rating PD at each band centre, rises smoothly between them, and is floored at 0.02% above 4.9. Below Z-EM −1.5 (the D threshold) PD keeps rising along a logistic tail from 40% with slope b (the logistic slope b used by the single logistic). Deterministic tabs use the rating band PD."),H.pdSensitivity,more);
       H.pdModel=pdBox;
       H.mcnote = el("p", { class: "note" });
-      // Native details keeps the controls keyboard-accessible and their values intact
-      // while collapsed; calculations and results continue updating independently.
-      const settingsSummary = el("summary",{class:"mc-settings-toggle"},
-        el("span",{class:"mc-settings-title"},"Monte Carlo settings"),
-        el("span",{class:"mc-settings-hint"},"Simulations · shock volatility · correlations"));
-      H.mcSettingsDetails=el("details",{class:"card mc-settings-panel"},
-        settingsSummary,
-        el("div",{class:"mc-settings-content"},
-          set,el("div",{class:"lbl mc-correlations-title"},"Correlations between the drawn shocks"),
-          corrBox,H.mcnote));
-      // Surface invalid correlation errors outside the collapsed settings panel.
-      H.mcerr = el("div", {class:"mc-settings-error"});
+      H.mcerr = el("div");
+      const c = card("Monte Carlo settings", "Expand to adjust the simulation count, shock volatility and correlations", null);
+      const settingsPanel = el("details", { class: "mc-settings-accordion" },
+        el("summary", {}, el("span", {class: "mc-settings-toggle"}, "Monte Carlo settings"),
+          el("small", {}, "Simulations, standard deviations and correlations")),
+        el("div", {class: "mc-settings-inner"}, set,
+          el("div", { class: "lbl", style: "margin:12px 0 6px" }, "Correlations between simulated shocks"), corrBox));
+      c.body.append(settingsPanel,H.mcnote,H.mcerr);
       H.zh = card("Z-EM distribution (final year)"); H.zh.body.append(legendRow([legendItem(LG.thrC, `Distress (${CFG.Z_DISTRESS_CUTOFF})`), legendItem(LG.thrW, `Safe (${CFG.Z_SAFE_CUTOFF})`)]), el("div", { class: "chart" }));
       H.zd = card("Zone distribution across simulations"); H.zd.body.append(el("div"));
       H.eh = card("Expected fiscal cost distribution (final year)"); H.eh.body.append(el("div", { class: "chart" }));
-      H.fan = card("Expected fiscal cost — percentile path"); H.fan.body.append(legendRow([legendItem(LG.med, "Median"), legendItem(LG.inner, "25th–75th"), legendItem(LG.outer, "5th–95th")]), el("div", { class: "chart" }));
-      H.pt = card("Percentile summary (final year)");
-      H.mcres = el("div", { class: "stack" }, el("div", { class: "grid" }, el("div", { class: "s7" }, H.zh.root), el("div", { class: "s5" }, H.zd.root)), H.eh.root, H.fan.root, H.pt.root);
-      H.out.replaceChildren(H.pdModel.root, H.mcSettingsDetails, H.mcerr, H.mcres);
+      H.fan = card("Expected fiscal cost — percentile path", "Y-axis is auto-scaled to projected values (not necessarily from zero) to show changes clearly."); H.fan.body.append(legendRow([legendItem(LG.med, "Median"), legendItem(LG.inner, "25th–75th"), legendItem(LG.outer, "5th–95th")]), el("div", { class: "chart" }));
+      H.pt = card("Percentile summary · final year");
+      H.mcCompare = card("PD model comparison", "Same simulated shocks, EAD and LGD · bars show P95 expected fiscal cost");
+      // The model comparison belongs alongside the Monte Carlo output panels.
+      H.pdSensitivity.remove();
+      H.mcCompare.body.append(H.pdSensitivity);
+      H.mcDashMeta = el("div", { class: "mc-dash-sub" });
+      H.mcFocusBtn = el("button", { type: "button", class: "mc-focus-button", "aria-pressed": "false", onclick: () => {
+        const layout = H.out.closest(".grid");
+        if (!layout) return;
+        const expanded = layout.classList.toggle("mc-focus-mode");
+        H.mcFocusBtn.textContent = expanded ? "↙ Show scenario controls" : "⤢ Expand dashboard";
+        H.mcFocusBtn.setAttribute("aria-pressed", String(expanded));
+      } }, "⤢ Expand dashboard");
+      const col = (cls, content) => el("div", { class: cls }, content);
+      H.mcres = el("section", { class: "mc-dashboard", "aria-label": "Monte Carlo risk dashboard" },
+        el("div", { class: "mc-dash-head" },
+          el("div", {}, el("div", { class: "mc-dash-eyebrow" }, "MONTE CARLO · RISK OVERVIEW"),
+            el("h3", {}, "Fiscal risk, at a glance"), H.mcDashMeta),
+          el("div", { class: "mc-dash-actions" }, H.mcFocusBtn)),
+        el("div", { class: "mc-dash-grid" },
+          col("mc-col-main mc-fan-card", H.fan.root),
+          col("mc-col-side mc-zone-card", H.zd.root),
+          col("mc-col-half mc-efc-card", H.eh.root),
+          col("mc-col-half mc-zem-card", H.zh.root),
+          col("mc-col-half mc-compare-card", H.mcCompare.root),
+          col("mc-col-half mc-percentiles-card", H.pt.root)),
+        el("p", { class: "mc-dash-footnote" }, "P95 and median are percentiles of expected fiscal costs across simulated shock paths, not realised payouts. The PD calibration is illustrative."));
+      H.out.replaceChildren(modelJourney(true), H.pdModel.root, c.root, H.mcres, modelNotes());
     },
     buildAll() {
       const H = this.H;
@@ -1783,6 +2017,33 @@
       if (!b) return;
       const p = this.params(), gs = S.gdp ? E.gdpPath(S.gdp, S.growth, st.H) : null;
       H.desc.replaceChildren(el("b", {}, "Active shocks: "), E.describeShocks(p) + (st.view === "all" ? "" : ` · ${st.soe}, base year ${st.year}`));
+      if (H.wfEffectNote || H.debtEffectNote) {
+        const wfOn = (p.waterfall_on || 0) > 0;
+        const debtOn = (p.default_on_missed_debt || 0) > 0;
+        let debtMiss = false, unpaid = 0, routed = 0, maxZDiff = 0;
+        // A single reference path is enough to explain the switch; do not rerun the full Monte Carlo.
+        if (st.view === "single" || wfOn) {
+          const path = E.runScenario(b, p, st.H);
+          debtMiss = path.some(r => (r["Missed Debt Service"] || 0) > 0);
+          unpaid = path.reduce((a, r) => a + (r["Unpaid Under Waterfall"] || 0), 0);
+          routed = Math.max(0, ...path.map(r => r["Waterfall Routed Share"] || 0));
+          if (wfOn && st.view === "single") {
+            const basePath = E.runScenario(b, { ...p, waterfall_on: 0 }, st.H);
+            maxZDiff = Math.max(0, ...path.map((r, i) => Math.abs(r.Z_EM - basePath[i].Z_EM)));
+          }
+        }
+        if (H.wfEffectNote) H.wfEffectNote.textContent = !wfOn
+          ? "OFF · All cash gaps use normal cash-first financing and borrowing."
+          : `ON · Routed cash up to ${pct0(routed)} in this scenario; unpaid waterfall bills: ${money(unpaid)}. ` +
+            (routed === 0 ? "No cash is routed yet: check coverage, compliance and start year." :
+             st.view === "single" && maxZDiff < 0.00001 ? "Z-EM is unchanged: prioritising payments does not create new cash; check the arrears and creditor comparison below." :
+             "See Liquidity & State compensation for cash, arrears and creditor changes.");
+        if (H.debtEffectNote) H.debtEffectNote.textContent = !debtOn
+          ? "OFF · Missed debt service does not force a D rating or override single-scenario PD."
+          : st.view === "mc" ? "ON · Single-scenario sensitivity only. Monte Carlo does not override its PD or sample realised defaults."
+          : debtMiss ? "ON · At least one year has missed debt service: check the default probability and projection cards for the effect."
+          : "ON but no missed debt service occurs with these assumptions; the PD and EFC therefore stay unchanged.";
+      }
       if (st.view === "single") this.renderSingle(b, p, gs);
       else if (st.view === "mc") this.renderMC(b, p, gs);
       else this.renderAll(gs);
@@ -2014,12 +2275,11 @@
       const st = S.sh, m = st.mc, H = this.H;
       this.drawPDCalibration(p);
       const fpk = p.fuel_shock_path && p.fuel_shock_path.length ? p.fuel_shock_path.reduce((a, v) => (Math.abs(v) > Math.abs(a) ? v : a), p.fuel_shock_path[0]) : null;
-      H.mcnote.textContent = `PD model: ${(m.pdmodel || "logistic") === "logistic" ? "Full logistic (default)" : "Smooth rating-anchored (sensitivity)"}. Mean shocks: fuel ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " (peak of the path)"}, FX ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, interest rate ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, revenue ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + `. EFC = PD × EAD × LGD in each simulated year; the distribution is across expected costs, not realized defaults.`;
+      H.mcnote.textContent = `PD model: rating-anchored curve (AAA floor, logistic tail below D; single logistic shown as a sensitivity). Mean shocks: fuel ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " (peak of the path)"}, FX ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, interest rate ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, revenue ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + `. EFC = PD × EAD × LGD in each simulated year; the distribution is across expected costs, not realized defaults.`;
       let sims;
       try {
-        sims = E.monteCarlo(b, { ...p, mc_pd_method: (m.pdmodel || "logistic") }, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });
+        sims = E.monteCarlo(b, { ...p, mc_pd_method: "rating_smooth" }, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });
       } catch (e) {
-        H.mcSettingsDetails.open = true; // expose invalid correlations for correction
         H.mcerr.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, e.message));
         H.mcres.hidden = true;
         put(H.strip);
@@ -2028,13 +2288,21 @@
       H.mcerr.replaceChildren(); H.mcres.hidden = false;
       const fin = sims.map((s) => last(s.path));
       const q = (k, x) => E.quantile(fin.map((r) => r[k]), x);
-      H.pdSensitivity.replaceChildren(el("h4",{},"Same-draw PD model sensitivity · final year"),
-        simpleTable(["PD curve", "Median EFC", "P95 EFC"], [
-          ["Full logistic", money(q("EFC_Full_Logistic", .5)), money(q("EFC_Full_Logistic", .95))],
-          ["Smooth rating-anchored", money(q("EFC_Rating_Anchored", .5)), money(q("EFC_Rating_Anchored", .95))]
-        ],{right:i=>i>0,cls:"compact"}),
-        el("p",{class:"note"},"Same shocks, EAD and LGD. P95 is a percentile of expected costs, not a realised government payout."));
-      const p50 = q("EFC", 0.5), p95 = q("EFC", 0.95), dist = fin.filter((r) => r.Zone === "Distress").length / fin.length;
+      const modelOutcomes = [
+        { name: "Rating-anchored (Monte Carlo)", med: q("EFC_Rating_Anchored", .5), p95: q("EFC_Rating_Anchored", .95), anchor: true },
+        { name: "Single logistic (sensitivity)", med: q("EFC_Full_Logistic", .5), p95: q("EFC_Full_Logistic", .95), anchor: false }
+      ];
+      const maxP95 = Math.max(...modelOutcomes.map(x => x.p95), 0.000001);
+      H.pdSensitivity.replaceChildren(
+        el("div", { class: "mc-compare-list" }, ...modelOutcomes.map(x =>
+          el("div", { class: "mc-compare-row" },
+            el("div", { class: "mc-compare-name" }, el("span", {}, x.name), el("strong", {}, money(x.p95))),
+            el("div", { class: "mc-compare-track", role: "img", "aria-label": `${x.name} P95 expected fiscal cost ${money(x.p95)}` },
+              el("span", { class: x.anchor ? "anchored" : "", style: `width:${Math.max(0, Math.min(100, x.p95 / maxP95 * 100))}%` })),
+            el("small", {}, `Median ${money(x.med)} · P95 ${money(x.p95)}`)))),
+        el("p", { class: "note" }, "Both PD curves use the same simulated shock paths. Differences reflect the PD model, not different economic shocks."));
+      H.mcDashMeta.textContent = `${st.soe} · ${m.n.toLocaleString("en-US")} simulations · ${last(fin)["Calendar Year"]} final year · Rating-anchored PD`;
+      const p50 = q("EFC_Rating_Anchored", 0.5), p95 = q("EFC_Rating_Anchored", 0.95), dist = fin.filter((r) => r.Zone === "Distress").length / fin.length;
       const gF = gs ? last(gs) : null;
       put(H.strip,
         tile(`Median EFC, year ${st.H}`, null, null, money(p50), CUR, `${st.soe} · ${m.n.toLocaleString("en-US")} simulations`),
@@ -2045,12 +2313,12 @@
       const zc = zoneCounts(fin);
       H.zd.body.firstChild.replaceChildren(el("div", { class: "hero", style: "gap:12px" }, el("div", { class: "hero-value", style: "font-size:40px" }, pct(dist, 0), el("small", {}, "of simulations end in distress")), ...zoneBar(zc, fin.length),
         el("p", { class: "note", style: "margin:0" }, `Median Z″ ${fmt(q("Z_EM", 0.5), 2)}; 5th percentile ${fmt(q("Z_EM", 0.05), 2)}.`)));
-      histogram(H.eh.body.firstChild, fin.map((r) => r.EFC), { xFmt: (t, s) => moneyTick(t, s), vlines: [{ x: p95, cls: "thr-crit", label: "95th pct. of EFC" }, { x: p50, cls: "ref-l", label: "median" }] });
+      histogram(H.eh.body.firstChild, fin.map((r) => r.EFC), { xFmt: (t, s) => moneyTick(t, s), vlines: [{ x: p95, cls: "thr-crit", label: "P95" }, { x: p50, cls: "ref-l" }] });
       const key = gs ? "EFC_GDP" : "EFC", pp = E.percentilePath(sims, key), xs = pp.map((r) => r.year);
       H.fan.head.querySelector("h3").textContent = gs ? "Expected fiscal cost / GDP — percentile path" : `Expected fiscal cost — percentile path${CUR ? " (" + CUR + ")" : ""}`;
       const f = gs ? (v) => pctS(v) : (v) => money(v);
       lines(H.fan.body.lastChild, xs, [{ vals: pp.map((r) => r.p50), cls: "ln-med", dot: "now", label: "Median" }],
-        { band: [{ lo: pp.map((r) => r.p5), hi: pp.map((r) => r.p95), cls: "band-outer" }, { lo: pp.map((r) => r.p25), hi: pp.map((r) => r.p75), cls: "band-inner" }], zeroFloor: true, L: 62, yFmt: gs ? (t) => pctS(t) : (t, s) => moneyTick(t, s),
+        { band: [{ lo: pp.map((r) => r.p5), hi: pp.map((r) => r.p95), cls: "band-outer" }, { lo: pp.map((r) => r.p25), hi: pp.map((r) => r.p75), cls: "band-inner" }], zeroFloor: false, L: 70, yFmt: gs ? (t) => pctS(t) : (t, s) => moneyTick(t, s),
           tip: (i) => [[f(pp[i].p95), "95th"], [f(pp[i].p75), "75th"], [f(pp[i].p50), "median"], [f(pp[i].p25), "25th"], [f(pp[i].p5), "5th"]], xLab: (i) => (i === 0 ? `${xs[i]} base` : String(xs[i])) });
       H.pt.body.replaceChildren(simpleTable(["Percentile", "Z-EM", `EFC${CUR ? " (" + CUR + ")" : ""}`, ...(gF ? ["EFC / GDP"] : [])],
         [[0.05, "5th"], [0.25, "25th"], [0.5, "Median"], [0.75, "75th"], [0.95, "95th"]].map(([x, l]) => [l, fmt(q("Z_EM", x), 2), money(q("EFC", x)), ...(gF ? [pctS(q("EFC", x) / gF)] : [])]), { right: (i) => i >= 1 }),
@@ -2329,7 +2597,7 @@
     build(root) {
       const H = (this.H = {});
       const SECS = [["exec", "Executive summary"], ["perf", "Financial performance"], ["risk", "Distress and fiscal risk"], ["stress", "Stress tests"], ["policy", "Policy implications"]];
-      const printBtn = canDownload ? el("button", { class: "btn primary no-print", type: "button", onclick: () => window.print() }, "Print / save as PDF") : null;
+      const printBtn = canDownload ? el("button", { class: "btn primary no-print", type: "button", onclick: () => window.print(), title: "Export all five sections of this Report; select Save as PDF in your browser’s print dialog." }, "Print / save full report as PDF") : null;
       const toc = el("nav", { class: "rep-toc no-print", "aria-label": "Report sections" }, SECS.map(([id, t], i) => el("a", { href: "#view-report", onclick: (e) => { e.preventDefault(); const n = document.getElementById("rep-" + id); if (n) n.scrollIntoView({ behavior: "smooth", block: "start" }); } }, el("b", { class: "num" }, String(i + 1)), t)));
       H.sec = {};
       const secs = SECS.map(([id, title], i) => {
@@ -2340,7 +2608,7 @@
       H.gen = el("p", { class: "rep-gen" });
       H.strip = statStrip();
       root.replaceChildren(pageHead("AUTOMATED REPORT", M.title || "SOE Fiscal Risk Report",
-        "Five sections generated from the data loaded in this page. Every number is recomputed when you load other data or change LGD, EAD or GDP on the Expected Fiscal Cost tab; the text is rule-based, not written by a person.", printBtn), H.strip, toc, ...secs, H.gen);
+        "Five sections generated from the data loaded in this page. Every number is recomputed when you load other data or change LGD, EAD or GDP on the Expected Fiscal Cost tab; the text is rule-based, not written by a person. Use Print / save full report as PDF to export all five sections.", printBtn), H.strip, toc, ...secs, H.gen);
     },
     render() {
       const H = this.H, st = S.rep, rows = latestOf(allRows()), n = rows.length;
