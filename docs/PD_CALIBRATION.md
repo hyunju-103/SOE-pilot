@@ -1,6 +1,6 @@
 # Logistic PD sensitivity: calibration · revised 21 October 2026
 
-**Role:** the single logistic is the Monte Carlo *sensitivity* (`mc_pd_method = "logistic"`), not the default. The default is the bounded rating-anchored curve (`docs/PD_FINAL_DECISION.md`).
+**Role:** the single logistic is the Monte Carlo *sensitivity* (`mc_pd_method = "logistic"`), not the default. The default is the rating-anchored curve (AAA floor, logistic tail below the D threshold) (`docs/PD_FINAL_DECISION.md`).
 
 **Specification:** `PD(Z)=sigmoid(a+bZ)`, **a = -2.02276962**, **b = -0.89133626**. This is an illustrative *minimax* fitting rule for the 20 reference rating PDs, not an empirically validated default model. Refit with `python scripts/calibrate_pd.py --refit` (`scipy` required).
 
@@ -25,7 +25,7 @@ The capped fit (`python scripts/calibrate_pd.py --refit --caps`) additionally fo
 
 ## Rating-anchored curve (Monte Carlo default)
 
-`pd_curves.py` and `templates/engine.js` implement monotone cubic Hermite interpolation of logit(PD), with Z-EM clamped to [D anchor -1.5, AAA anchor 4.9]. It matches every reference PD **at the defined representative score** (zero in-sample error), is monotone, continuous in Z-EM, and C1 at the 18 interior anchors; PD stays within [0.02%, 40%]. It is not a two-parameter logistic.
+`pd_curves.py` and `templates/engine.js` implement monotone cubic Hermite interpolation of logit(PD), floored at the AAA PD (0.02%) at and above the AAA anchor 4.9; below the D anchor (-1.5) PD follows the logistic tail from 40% with slope b = `pd_logit_b`, the same tail as `rating_tail`. It matches every reference PD **at the defined representative score** (zero in-sample error), is monotone, continuous in Z-EM, and C1 at the 18 interior anchors; PD is at least 0.02% and rises above 40% below Z-EM -1.5 (98.9% at -7). It is not a two-parameter logistic.
 
 Both models calculate `EFC = PD*EAD*LGD` on **the same simulated financial paths**; no Bernoulli default or realised loss draw. A missed debt service marker does not override MC PD. The final-year P95 is a percentile of expected costs across shock paths, not an actual budget payment tail-risk measure. Neither model is validated against SOE default observations.
 

@@ -1,14 +1,18 @@
-"""Illustrative, monotone, bounded logit-cubic curve passing through ALL rating PD anchors.
+"""Illustrative, monotone logit-cubic curve passing through ALL rating PD anchors.
 
-C1 PCHIP slopes (Fritsch–Butland), operating on log-odds, through the 20 rating
-band centres (finite-band midpoints; AAA and D use their finite edge). Z is
-clamped to [D anchor, AAA anchor] before evaluation, so the PD is the D-band PD
-(40%) at and below the D anchor and the AAA PD (0.02%) at and above the AAA
-anchor: no extrapolation beyond the rating table. This is the primary Monte
-Carlo PD curve; it is not an empirically calibrated default-frequency model.
+C1 PCHIP slopes (Fritsch-Butland), operating on log-odds, through the 20 rating
+band centres (finite-band midpoints; AAA and D use their finite edge). Between
+the D anchor and the AAA anchor the curve is the interpolation; at and above the
+AAA anchor the PD is floored at the AAA PD (0.02%). Below the D anchor (Z-EM
+-1.5, the D threshold) PD keeps rising along the logistic tail
+PD = logistic(logit(PD_D) + b (z - Z_D)) with PD_D = 40% and slope b = pd_logit_b;
+`logistic_tail` is the single definition, shared with the "rating_tail" method.
+This is the primary Monte Carlo PD curve; it is not an empirically calibrated
+default-frequency model.
 """
 from functools import lru_cache
 import math
+import config
 from config import Z_RATING_TABLE
 
 
@@ -55,7 +59,17 @@ def z_bounds():
     return x[0], x[-1]
 
 
-def anchored_pd(z):
+def logistic_tail(z, b, z_d, pd_d):
+    """PD below the D threshold: logistic(logit(pd_d) + b (z - z_d)); b < 0, so PD
+    rises as z falls. Used by both "rating_tail" and "rating_smooth"."""
+    return _sigmoid(math.log(pd_d / (1.0 - pd_d)) + b * (z - z_d))
+
+
+def anchored_pd(z, b=None):
+    """Rating-anchored PD ("rating_smooth"). b is the tail slope below the D
+    anchor (default: config pd_logit_b, as in shocks.pd_value)."""
+    if b is None:
+        b = config.DEFAULT_CASH_SETTINGS["pd_logit_b"]
     try:
         z=float(z)
     except (TypeError, ValueError, OverflowError):
@@ -63,9 +77,9 @@ def anchored_pd(z):
     if not math.isfinite(z):
         return float('nan')
     x,y,d=anchors()
-    if z<=x[0]:      # clamp to the D anchor: PD held at the D-band PD
-        return _sigmoid(y[0])
-    if z>=x[-1]:     # clamp to the AAA anchor: PD held at the AAA-band PD
+    if z<x[0]:       # below the D anchor: logistic tail from the D-band PD
+        return logistic_tail(z, b, x[0], _sigmoid(y[0]))
+    if z>=x[-1]:     # AAA floor: PD held at the AAA-band PD
         return _sigmoid(y[-1])
     import bisect
     i=bisect.bisect_right(x,z)-1

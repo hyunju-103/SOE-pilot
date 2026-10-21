@@ -5,7 +5,7 @@ Published interactive snapshot: `SOE-Fiscal-Risk-Final.html` (header restored to
 ## What is published
 
 - Six-stage model journey and redesigned Monte Carlo cards / output layout.
-- Bounded rating-anchored PD (monotone curve through the 20 rating PDs, held at 40% below Z-EM -1.5 and 0.02% above 4.9) as the default Monte Carlo expected-fiscal-cost calculation; deterministic tabs keep the rating band PD.
+- Rating-anchored PD (monotone curve through the 20 rating PDs, floored at 0.02% above Z-EM 4.9, with a rising logistic tail from 40% below Z-EM -1.5) as the default Monte Carlo expected-fiscal-cost calculation; deterministic tabs keep the rating band PD.
 - Single logistic PD provided as a same-draw sensitivity.
 - Cash-flow waterfall, correlated fuel / FX and optional interest / revenue shocks.
 - EFC = PD × EAD × LGD. No Bernoulli default events or realised loss draws.

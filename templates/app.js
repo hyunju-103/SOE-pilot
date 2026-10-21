@@ -1555,7 +1555,7 @@
   const wfOrderItems = (q) => Object.keys(WF_TIER).filter((k) => (k !== "om_floor" || (q.om_floor_share || 0) > 0) && (k !== "junior" || (q.junior_share || 0) > 0) && (k !== "reserve" || (q.reserve_months || 0) > 0));
   const WF_TIER_SET = { statutory: "Rank: taxes, operator", ipp: "Rank: IPPs", fuel: "Rank: fuel and gas", debt: "Rank: debt service", reserve: "Rank: reserve", om_floor: "Rank: O&M floor", residual: "Rank: residual" };
   const WF_RULES = [["soe", "The SOE (own costs above the floor first)"], ["junior", "Junior creditors first"], ["pro_rata", "The SOE and junior creditors pro rata"], ["state", "The State pays it"]];
-  const PD_METHODS = [["rating", "Rating bands (at most 40%)"], ["rating_tail", "Rating bands with a logistic tail (above 40%)"], ["logistic", "Logistic in Z-EM"], ["rating_smooth", "Rating-anchored curve (bounded; Monte Carlo default)"], ["user", "User-specified"]];
+  const PD_METHODS = [["rating", "Rating bands (at most 40%)"], ["rating_tail", "Rating bands with a logistic tail (above 40%)"], ["logistic", "Logistic in Z-EM"], ["rating_smooth", "Rating-anchored curve (AAA floor, logistic tail below D; Monte Carlo default)"], ["user", "User-specified"]];
   // arrears columns by tier: [rank key, path column, short label]
   const WF_COLS = [["statutory", "Arrears to Statutory and Operator", "Taxes, operator"], ["ipp", "Arrears to IPPs", "IPPs"], ["fuel", "Arrears to Fuel Suppliers", "Fuel"], ["debt", "Missed Debt Service", "Debt service"],
     ["om_floor", "Arrears on O&M Floor", "O&M floor"], ["ops", "Arrears on Own Operations", "Own operations"], ["junior", "Arrears to Junior Creditors", "Junior creditors"]];
@@ -1824,7 +1824,7 @@
       // Monte Carlo: those controls do not affect its rating-anchored EFC-only model.
       if (S.sh.view === "mc") return [el("div", {class:"mc-pd-side-note"},
         el("b",{},"Monte Carlo PD: rating-anchored"),
-        el("small",{},"Uses each simulated Z-EM on a smooth curve through the rating band PDs (40% at Z-EM −1.5 and below, 0.02% at 4.9 and above); no realised-default draws. The single logistic is shown as a sensitivity."))];
+        el("small",{},"Uses each simulated Z-EM on a smooth curve through the rating band PDs (40% at Z-EM −1.5, rising along a logistic tail below it; floored at 0.02% at 4.9 and above); no realised-default draws. The single logistic is shown as a sensitivity."))];
       const e = S.sh.expo, m = e.pd_method || "rating";
       const ex = el("small", {});
       const showEx = () => {
@@ -1835,8 +1835,8 @@
       const sl2 = (label, k, mn, mx, step, f, help) => fSlider(label, { min: mn, max: mx, step, value: ok(e[k]) ? e[k] : CFG.DEFAULT_CASH_SETTINGS[k], fmt: f, id: "sh-" + k, info: help }, (v) => { e[k] = v; showEx(); this.schedule(); });
       return [
         fSelect("Probability of default (PD)", PD_METHODS, m, (v) => { e.pd_method = v; rebuild(); },
-          { info: "Rating bands: PD by Z-EM rating, at most 40% (rating D). Logistic tail: the same bands, but below the D threshold (Z-EM " + fmt(CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], 1) + ") PD keeps rising along a logistic curve from 40% towards 100%. Logistic: PD = 1 / (1 + e^−(a + b·Z)) for every Z. User: one PD for every year. This selector controls single-scenario views; Monte Carlo uses the bounded rating-anchored PD curve for expected fiscal cost." }),
-        m === "rating_tail" || m === "logistic" ? sl2("Logistic slope b", "pd_logit_b", -3, -0.2, 0.01, (v) => fmt(v, 2), "How fast PD rises as Z-EM falls (negative). Calibrated against the current illustrative rating table; update with observed defaults when available.") : null,
+          { info: "Rating bands: PD by Z-EM rating, at most 40% (rating D). Logistic tail: the same bands, but below the D threshold (Z-EM " + fmt(CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], 1) + ") PD keeps rising along a logistic curve from 40% towards 100%. Logistic: PD = 1 / (1 + e^−(a + b·Z)) for every Z. User: one PD for every year. This selector controls single-scenario views; Monte Carlo uses the rating-anchored PD curve (AAA floor, logistic tail below the D threshold) for expected fiscal cost." }),
+        sl2("Logistic slope b", "pd_logit_b", -3, -0.2, 0.01, (v) => fmt(v, 2), "How fast PD rises as Z-EM falls (negative). Sets the logistic tail below the D threshold (single-scenario \"logistic tail\" and the Monte Carlo rating-anchored curve) and the single logistic sensitivity. Calibrated against the current illustrative rating table; update with observed defaults when available."),
         m === "logistic" ? sl2("Logistic intercept a", "pd_logit_a", -5, 1, 0.01, (v) => fmt(v, 2), "Log-odds of default at Z-EM = 0. Calibrated against the existing rating PD table; methodological details in docs/PD_CALIBRATION.md.") : null,
         m === "user" ? sl2("PD (every year)", "pd_user", 0, 1, 0.01, pctAuto, "A PD set by the user, applied to every projection year.") : null,
         el("div", { class: "fld" }, el("span", { class: "lbl" }, "PD in a year with debt service missed", info("Single-scenario views only: when debt service is unpaid, the year is rated D and its PD can be overridden. Monte Carlo uses its own PD curve with no override or actual default draws.")),
@@ -1897,7 +1897,7 @@
       const rating = (z) => E.pdValue(z, E.zRating(z), false, {pd_method:"rating"});
       const zw = [-4,-3,-2,-1,0,1,2,3,4,5], xlo=-5, xhi=5, W=720, ht=244, L=55, R=22, T=14, B=35;
       const x=(z)=>L+(z-xlo)/(xhi-xlo)*(W-L-R), y=(pd)=>ht-B-pd*(ht-B-T);
-      const svg=svgEl("svg",{viewBox:`0 0 ${W} ${ht}`,width:"100%",role:"img", "aria-label":"Rating-anchored PD is continuous and bounded, the single logistic is a sensitivity, and rating-band PD is a staircase with a 40 percent ceiling"});
+      const svg=svgEl("svg",{viewBox:`0 0 ${W} ${ht}`,width:"100%",role:"img", "aria-label":"Rating-anchored PD is continuous, floored at the AAA PD and rising along a logistic tail below the D threshold, the single logistic is a sensitivity, and rating-band PD is a staircase with a 40 percent ceiling"});
       [0,.2,.4,.6,.8,1].forEach((v)=>{
         svgEl("line",{x1:L,x2:W-R,y1:y(v),y2:y(v),class:"grid-l"},svg);
         txt(svg,L-8,y(v),fmt(v*100,0)+"%","t-muted num","end",10.5);
@@ -1905,7 +1905,7 @@
       zw.forEach(z=>txt(svg,x(z),ht-14,z.toString(),"t-muted num","middle",10.5));
       const pts=[];for(let k=0;k<=250;k++){const z=xlo+k*(xhi-xlo)/250;pts.push((k?"L":"M")+x(z).toFixed(2)+","+y(pred(z)).toFixed(2));}
       svgEl("path",{d:pts.join(""),class:"pd-curve-logistic"},svg);
-      const pts2=[];for(let k=0;k<=250;k++){const z=xlo+k*(xhi-xlo)/250;const v=E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth"});pts2.push((k?"L":"M")+x(z).toFixed(2)+","+y(v).toFixed(2));}
+      const pts2=[];for(let k=0;k<=250;k++){const z=xlo+k*(xhi-xlo)/250;const v=E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth",pd_logit_b:b});pts2.push((k?"L":"M")+x(z).toFixed(2)+","+y(v).toFixed(2));}
       svgEl("path",{d:pts2.join(""),class:"pd-curve-smooth"},svg);
       // A staircase, not a smoothed line: show that the prior rating approach has jumps.
       const boundaries=[xlo,...CFG.Z_RATING_TABLE.flatMap(v=>[v[0],v[1]]).filter(z=>ok(z)&&z>xlo&&z<xhi),xhi].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a-b);
@@ -1915,7 +1915,7 @@
       }
       svgEl("path",{d,class:"pd-curve-rating"},svg);
       svgEl("line",{x1:L,x2:W-R,y1:y(.4),y2:y(.4),class:"pd-reference"},svg);
-      txt(svg,W-R-4,y(.4)-8,"40% rating ceiling","t-muted","end",10);
+      txt(svg,W-R-4,y(.4)-8,"40% rating-band ceiling","t-muted","end",10);
       H.pdChart.replaceChildren(svg);
       const ratingAnchors = CFG.Z_RATING_TABLE.map(([lo,hi,name,ref]) => ({
         z: lo===null ? hi : hi===null ? lo : (lo+hi)/2,
@@ -1923,10 +1923,10 @@
       }));
       const errors = ratingAnchors.map(r=>Math.abs((pred(r.z)-r.ref)*100));
       const maxError=Math.max(...errors), mae=errors.reduce((a,b)=>a+b,0)/errors.length;
-      const smooth=(z)=>E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth"});
+      const smooth=(z)=>E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth",pd_logit_b:b});
       const smoothMax=Math.max(...ratingAnchors.map(r=>Math.abs((smooth(r.z)-r.ref)*100)));
       const zLo=ratingAnchors.reduce((m,r)=>Math.min(m,r.z),Infinity), zHi=ratingAnchors.reduce((m,r)=>Math.max(m,r.z),-Infinity);
-      H.pdLead.textContent=`Monte Carlo PD: rating-anchored curve through the ${ratingAnchors.length} reference rating PDs (monotone interpolation of log-odds in Z-EM); ${smoothMax<1e-9?"exact at all "+ratingAnchors.length+" band centres":"maximum absolute difference at the band centres "+fmt(smoothMax,2)+" pp"}. Held at ${pct(smooth(zLo-1),0)} below Z-EM ${fmt(zLo,1)} and ${pct(smooth(zHi+1),2)} above ${fmt(zHi,1)}. Sensitivity: single logistic PD = sigmoid(${fmt(a,5)} ${b<0?"−":"+"} ${fmt(Math.abs(b),5)} × Z-EM), minimax fit, maximum absolute difference ${fmt(maxError,2)} pp, mean ${fmt(mae,2)} pp. Reference PDs are illustrative; not validated against observed SOE defaults.`;
+      H.pdLead.textContent=`Monte Carlo PD: rating-anchored curve through the ${ratingAnchors.length} reference rating PDs (monotone interpolation of log-odds in Z-EM); ${smoothMax<1e-9?"exact at all "+ratingAnchors.length+" band centres":"maximum absolute difference at the band centres "+fmt(smoothMax,2)+" pp"}. Floored at ${pct(smooth(zHi+1),2)} above Z-EM ${fmt(zHi,1)}; below Z-EM ${fmt(zLo,1)} (the D threshold) PD keeps rising along a logistic tail from ${pct(smooth(zLo),0)} with slope b = ${fmt(b,3)} (${pct(smooth(zLo-1.5),0)} at Z-EM ${fmt(zLo-1.5,1)}). Sensitivity: single logistic PD = sigmoid(${fmt(a,5)} ${b<0?"−":"+"} ${fmt(Math.abs(b),5)} × Z-EM), minimax fit, maximum absolute difference ${fmt(maxError,2)} pp, mean ${fmt(mae,2)} pp. Reference PDs are illustrative; not validated against observed SOE defaults.`;
       H.pdTable.replaceChildren(simpleTable(["Rating","Representative Z-EM","Reference PD","Rating-anchored PD (Monte Carlo)","Logistic PD (sensitivity)","Logistic difference (pp)"],ratingAnchors.map(r=>[r.name,fmt(r.z,3),pct(r.ref,3),pct(smooth(r.z),3),pct(pred(r.z),3),sgn((pred(r.z)-r.ref)*100,3)]),{right:i=>i>0,cls:"compact"}));
     },
     buildMC() {
@@ -1959,10 +1959,10 @@
         el("div",{class:"pd-chart-legend"},el("span",{class:"legend-key pd-smooth-key"},"Rating-anchored (Monte Carlo)"),el("span",{class:"legend-key pd-logistic-key"},"Single logistic (sensitivity)"),el("span",{class:"legend-key pd-rating-key"},"Rating band steps (deterministic)")),
         H.pdTable,
         el("p",{class:"note"},"Sensitivity: the two-parameter logistic is fitted by minimizing the largest absolute percentage-point gap across the 20 representative rating anchors, so it cannot reproduce every reference PD. Neither curve is fitted to real SOE default histories."));
-      const pdBox=card("PD model · Monte Carlo", "Headline EFC uses the bounded rating-anchored PD curve; the single logistic is shown as a sensitivity under identical shocks.");
+      const pdBox=card("PD model · Monte Carlo", "Headline EFC uses the rating-anchored PD curve (floored at the AAA PD, rising logistic tail below the D threshold); the single logistic is shown as a sensitivity under identical shocks.");
       pdBox.body.append(el("div",{class:"mc-model-summary"},
         el("span",{class:"mc-pill"},"Rating-anchored · default"),el("span",{class:"mc-pill"},"EFC only"),
-        el("span",{class:"mc-pill"},"No actual default draws")),H.pdLead,el("p",{class:"note",style:"margin:0 0 12px"},"Monte Carlo PD is interpolated in Z-EM between rating band centres: it equals the rating PD at each band centre, rises smoothly between them, and is held at 40% below Z-EM −1.5 and 0.02% above 4.9. Deterministic tabs use the rating band PD."),H.pdSensitivity,more);
+        el("span",{class:"mc-pill"},"No actual default draws")),H.pdLead,el("p",{class:"note",style:"margin:0 0 12px"},"Monte Carlo PD is interpolated in Z-EM between rating band centres: it equals the rating PD at each band centre, rises smoothly between them, and is floored at 0.02% above 4.9. Below Z-EM −1.5 (the D threshold) PD keeps rising along a logistic tail from 40% with slope b (the logistic slope b used by the single logistic). Deterministic tabs use the rating band PD."),H.pdSensitivity,more);
       H.pdModel=pdBox;
       H.mcnote = el("p", { class: "note" });
       H.mcerr = el("div");
@@ -2275,7 +2275,7 @@
       const st = S.sh, m = st.mc, H = this.H;
       this.drawPDCalibration(p);
       const fpk = p.fuel_shock_path && p.fuel_shock_path.length ? p.fuel_shock_path.reduce((a, v) => (Math.abs(v) > Math.abs(a) ? v : a), p.fuel_shock_path[0]) : null;
-      H.mcnote.textContent = `PD model: bounded rating-anchored curve (single logistic shown as a sensitivity). Mean shocks: fuel ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " (peak of the path)"}, FX ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, interest rate ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, revenue ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + `. EFC = PD × EAD × LGD in each simulated year; the distribution is across expected costs, not realized defaults.`;
+      H.mcnote.textContent = `PD model: rating-anchored curve (AAA floor, logistic tail below D; single logistic shown as a sensitivity). Mean shocks: fuel ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " (peak of the path)"}, FX ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, interest rate ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, revenue ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + `. EFC = PD × EAD × LGD in each simulated year; the distribution is across expected costs, not realized defaults.`;
       let sims;
       try {
         sims = E.monteCarlo(b, { ...p, mc_pd_method: "rating_smooth" }, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });

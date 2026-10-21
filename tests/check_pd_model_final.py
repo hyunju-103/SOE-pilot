@@ -12,13 +12,14 @@ for lo,hi,r,p in config.Z_RATING_TABLE:
  zs.append(z);pdref.append(p)
  assert abs(anchored_pd(z)-p)<1e-14,(r,z,p,anchored_pd(z))
 # C1 numerical derivative across the interior knots, with allowance for floating precision.
-# The two end anchors (D, AAA) are where the bounded curve is clamped: continuous there, flat beyond, so
-# the slope is allowed to change (one-sided slope on the clamped side must be exactly 0).
+# The two end anchors are where the curve changes branch, so the slope is allowed to change there: at the AAA
+# anchor the PD is floored (right slope exactly 0); at the D anchor the left side is the logistic tail, whose
+# slope is b*PD*(1-PD) = b*0.24 (the PCHIP end slope on the right is a separate quantity: a kink, not a jump).
 for z in sorted(zs):
  h=1e-5
  l=(anchored_pd(z)-anchored_pd(z-h))/h
  r=(anchored_pd(z+h)-anchored_pd(z))/h
- if z==min(zs): assert l==0 and r<0,(z,l,r)
+ if z==min(zs): assert abs(l-config.DEFAULT_CASH_SETTINGS['pd_logit_b']*0.4*0.6)<1e-4 and r<0,(z,l,r)
  elif z==max(zs): assert r==0 and l<0,(z,l,r)
  else: assert abs(l-r)<1e-4,(z,l,r)
 values=[anchored_pd(z) for z in np.linspace(-8,9,25001)]
@@ -27,7 +28,7 @@ assert max(np.diff(values))<=1e-12
 zcheck=list(np.linspace(-7,8,301))+zs
 payload={'config':report.config_payload(),'zs':zcheck,'engine':str(R/'templates/engine.js')}
 runner=r'''const fs=require('fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const e=require(p.engine).create(p.config);
-console.log(JSON.stringify(p.zs.map(z=>[e.pdValue(z,e.zRating(z),false,{pd_method:'rating_smooth'}),e.pdValue(z,e.zRating(z),false,{pd_method:'logistic',pd_logit_a:p.config.DEFAULT_CASH_SETTINGS.pd_logit_a,pd_logit_b:p.config.DEFAULT_CASH_SETTINGS.pd_logit_b})])));
+console.log(JSON.stringify(p.zs.map(z=>[e.pdValue(z,e.zRating(z),false,{pd_method:'rating_smooth',pd_logit_b:p.config.DEFAULT_CASH_SETTINGS.pd_logit_b}),e.pdValue(z,e.zRating(z),false,{pd_method:'logistic',pd_logit_a:p.config.DEFAULT_CASH_SETTINGS.pd_logit_a,pd_logit_b:p.config.DEFAULT_CASH_SETTINGS.pd_logit_b})])));
 '''
 r=subprocess.run(['node','-e',runner],capture_output=True,text=True,input=json.dumps(payload),check=True)
 out=json.loads(r.stdout)

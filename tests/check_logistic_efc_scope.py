@@ -1,4 +1,4 @@
-"""Fast final assertions: Monte Carlo PD scope, both engines. Default = bounded rating-anchored curve;
+"""Fast final assertions: Monte Carlo PD scope, both engines. Default = rating-anchored curve (AAA floor, logistic tail below D);
 mc_pd_method=logistic = single-logistic sensitivity; EFC only, no override, no default draws."""
 import json, sys, subprocess, math
 from pathlib import Path
@@ -21,7 +21,7 @@ assert set(mc['MC_PD_Model'])=={'rating_smooth'}
 mcl=shocks.run_monte_carlo(base,dict(p,mc_pd_method='logistic'),**kw)   # sensitivity
 assert set(mcl['MC_PD_Model'])=={'logistic'}
 assert not any(x in mc.columns for x in ['Default Year','Realised Cost','Realised Cost / GDP'])
-for _,r in mc.iterrows():   # default: bounded rating-anchored PD
+for _,r in mc.iterrows():   # default: rating-anchored PD
     pd=anchored_pd(float(r['Z_EM']))
     assert abs(float(r['PD'])-pd)<1e-12
     assert abs(float(r['EFC'])-pd*float(r['EAD'])*float(r['LGD']))<1e-7*max(1,float(r['EFC']))
@@ -61,4 +61,4 @@ assert not result['bad'], result['bad'][:3]
 assert result['n']==2*8*4
 for z,pd in result['pairs']:
     assert abs(pd-anchored_pd(z))<1e-12,(z,pd,anchored_pd(z))
-print(f'PASS Python {len(mc)} records and JavaScript {result["n"]} records: default bounded rating-anchored and logistic sensitivity, no override, EFC only.')
+print(f'PASS Python {len(mc)} records and JavaScript {result["n"]} records: default rating-anchored (AAA floor, logistic tail) and logistic sensitivity, no override, EFC only.')

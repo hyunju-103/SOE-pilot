@@ -319,7 +319,7 @@ def main():
     check("15 default overrides", shocks.pd_value(3.0, "BBB+", True, {"pd_method": "user", "pd_user": 0.07}), 1.0)
     check("15 cumulative PD", shocks.cumulative_pd([0.1, 0.2, float("nan"), 0.5]), 1 - 0.9 * 0.8 * 0.5)
 
-    # 16. Final Monte Carlo: EFC only, no default draws. Default PD = bounded rating-anchored curve; logistic = sensitivity.
+    # 16. Final Monte Carlo: EFC only, no default draws. Default PD = rating-anchored curve (AAA floor, logistic tail below D); logistic = sensitivity.
     r = demo[0][1]
     q = params_for(r, dict(oil, pd_method="user", pd_user=0.1, pd_on_default=1.0))
     kw = dict(n_sims=100, fuel_std=0.1, fx_std=0.08, correlation=0.3, horizon_years=5, lgd_pct=70, seed=42)
@@ -331,7 +331,7 @@ def main():
     z = m1["Z_EM"].values
     from pd_curves import anchored_pd
     expected_pd = np.array([anchored_pd(v) for v in z])
-    check("16 PD calculated from each Z-EM (default: bounded rating-anchored)", float(np.allclose(m1["PD"].values, expected_pd)), 1.0)
+    check("16 PD calculated from each Z-EM (default: rating-anchored)", float(np.allclose(m1["PD"].values, expected_pd)), 1.0)
     ml = shocks.run_monte_carlo(r, dict(q, mc_pd_method="logistic"), **kw)
     expected_l = 1 / (1 + np.exp(-np.clip(a + b * ml["Z_EM"].values, -700, 700)))
     check("16 PD with mc_pd_method=logistic (sensitivity)", float(np.allclose(ml["PD"].values, expected_l)), 1.0)
@@ -349,7 +349,7 @@ const a = inp.config.DEFAULT_CASH_SETTINGS.pd_logit_a, b = inp.config.DEFAULT_CA
 const chk = (ss, f) => ss.every(s => !('defaultYear' in s) && !('realisedCost' in s) && s.path.every(r =>
   !('Default Year' in r) && !('Realised Cost' in r) && Math.abs(r.PD - f(r)) < 1e-12 &&
   Math.abs(r.EFC - r.PD * r.EAD * r.LGD) < 1e-9 * Math.max(1,Math.abs(r.EFC))));
-const ok = chk(sims, r => E.pdValue(r.Z_EM, r.Rating, false, { pd_method: "rating_smooth" })) && sims[0].path[0].MC_PD_Model === "rating_smooth" &&
+const ok = chk(sims, r => E.pdValue(r.Z_EM, r.Rating, false, { pd_method: "rating_smooth", pd_logit_b: b })) && sims[0].path[0].MC_PD_Model === "rating_smooth" &&
   chk(simsL, r => 1/(1+Math.exp(-(a+b*r.Z_EM)))) && simsL[0].path[0].MC_PD_Model === "logistic";
 process.stdout.write(JSON.stringify({ ok, n: sims.length }));
 """
