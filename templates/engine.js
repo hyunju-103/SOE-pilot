@@ -396,8 +396,10 @@
 
         st.STDebt += fBank; st.Payables += fAP; st.LTDebt += fLT;
         st.Recv += dRecv; st.VAT += vat; st.CustArrears += dCust;
-        st.RE += ni;
-        st.Equity += ni + dReval + support + statePay;
+        // the arrears write-down is a non-cash impairment of current assets: it hits equity and retained
+        // earnings in the same year, but not EBIT, net income or the financing need
+        st.RE += ni + dArr;
+        st.Equity += ni + dArr + dReval + support + statePay;
         st.Support += support; st.StateShortfall += statePay;
         for (const k of TIER_KEYS) st[k] += un[k];
         st.Reserve += topUp - rDraw;

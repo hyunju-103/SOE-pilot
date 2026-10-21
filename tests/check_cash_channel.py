@@ -35,7 +35,10 @@ from utils.portfolio import latest_per_entity  # noqa: E402
 
 
 def original_run_scenario(b, p, H):
-    """The engine before the cash channel (Z-EM inputs only)."""
+    """The engine before the cash channel (Z-EM inputs only).
+
+    One deliberate difference from the historical code: the arrears write-down of current assets also
+    reduces equity and retained earnings (C3a), so that TA - TL - Equity stays constant."""
     s = dict(RE=b["Retained Earnings"], Eq=b["Equity"], TL=b["Total Liabilities"], TA=b["Total Assets"],
              CA=b["Current Assets"], CL=b["Current Liabilities"], Rev=b["Revenues"], OpEx=b["Operating Expense"])
     out = [(b["Operating Profits (EBIT)"], s["RE"], s["Eq"], s["TL"], s["TA"], s["CA"], s["CL"])]
@@ -54,7 +57,7 @@ def original_run_scenario(b, p, H):
         ebit = b["Operating Profits (EBIT)"] + d_fuel + d_fx + d_rev
         ni = b["Net Income"] + (d_fuel + d_fx + d_rev) - d_int
         gap = max(0.0, -ni)
-        s["RE"] += ni; s["Eq"] += ni + d_rv; s["TL"] += gap - d_rv; s["CA"] += d_arr; s["TA"] += ni + d_arr
+        s["RE"] += ni + d_arr; s["Eq"] += ni + d_arr + d_rv; s["TL"] += gap - d_rv; s["CA"] += d_arr; s["TA"] += ni + d_arr
         out.append((ebit, s["RE"], s["Eq"], s["TL"], s["TA"], s["CA"], s["CL"]))
     return out
 
@@ -117,11 +120,8 @@ def main():
             p = dict(p0); p.setdefault("fuel_cost_share", 0.3); p["revenue_shock_pct"] = p["revenue_shock_std_devs"] * 0.1
             path = shocks.run_scenario(r, p, H)
             gap0 = r["Total Assets"] - r["Total Liabilities"] - r["Equity"]
-            arr = 0.0
-            for t in range(1, H + 1):
-                if t <= p["shock_duration_years"]:
-                    arr += -p["arrears_pct_of_revenue"] * r["Revenues"]
-                drift = path["Total Assets"].iloc[t] - path["Total Liabilities"].iloc[t] - path["Equity"].iloc[t] - gap0 - arr
+            for t in range(1, H + 1):                       # the arrears write-down is charged to equity (C3a): no offset
+                drift = path["Total Assets"].iloc[t] - path["Total Liabilities"].iloc[t] - path["Equity"].iloc[t] - gap0
                 n += 1
                 if abs(drift) > 1e-6 * max(1.0, abs(r["Total Assets"])):
                     fails.append(f"3 identity {name} {r['Entity']} t={t}: drift {drift:.4g}")

@@ -198,9 +198,12 @@ def main():
                 for k in ["Cash Funding Gap", "New Short-term Debt", "New Long-term Debt", "Interest on New Debt", "Emergency Support"]:
                     check(f"5 {tag} {r['Entity']} t={t} {k}", g[k].iloc[t], 0.0)
                 # the balance-sheet gap (non-zero only where the demo data or other shocks already break the identity) is unchanged
-                check(f"5 {tag} {r['Entity']} t={t} TA - TL - Equity as without the waterfall",
-                      g["Total Assets"].iloc[t] - g["Total Liabilities"].iloc[t] - g["Equity"].iloc[t],
-                      g0["Total Assets"].iloc[t] - g0["Total Liabilities"].iloc[t] - g0["Equity"].iloc[t])
+                # (compared on the scale of total assets: the gap is now ~0, so a relative test would only measure float noise)
+                n += 1
+                d_wf = g["Total Assets"].iloc[t] - g["Total Liabilities"].iloc[t] - g["Equity"].iloc[t]
+                d_no = g0["Total Assets"].iloc[t] - g0["Total Liabilities"].iloc[t] - g0["Equity"].iloc[t]
+                if abs(d_wf - d_no) > 1e-9 * abs(r["Total Assets"]):
+                    fails.append(f"5 {tag} {r['Entity']} t={t} TA - TL - Equity as without the waterfall: {d_wf} vs {d_no}")
                 arr = sum(g[k].iloc[t] for k in TIERS)
                 arr0 = sum(g[k].iloc[t - 1] for k in TIERS)
                 check(f"5 {tag} {r['Entity']} t={t} current liabilities move with arrears",

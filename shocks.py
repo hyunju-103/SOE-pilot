@@ -406,8 +406,10 @@ def run_scenario(base_row: pd.Series, params: dict, horizon_years: int) -> pd.Da
         state["Receivable"] += d_receivable
         state["TrappedVAT"] += trapped_vat
         state["CustArrears"] += d_cust
-        state["RetainedEarnings"] = state["RetainedEarnings"] + net_income_t
-        state["Equity"] = state["Equity"] + net_income_t + d_equity_fx_reval + support + state_pay
+        # the arrears write-down is a non-cash impairment of current assets: it hits equity and retained
+        # earnings in the same year, but not EBIT, net income or the financing need
+        state["RetainedEarnings"] = state["RetainedEarnings"] + net_income_t + d_current_assets_arrears
+        state["Equity"] = state["Equity"] + net_income_t + d_current_assets_arrears + d_equity_fx_reval + support + state_pay
         state["Support"] += support
         state["StateShortfall"] += state_pay
         for k in _TIER_KEYS:

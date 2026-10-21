@@ -62,7 +62,7 @@ const pp = Object.assign({}, inp.scenarios.combined, { fuel_cost_share: 0.25, re
 const mcStats = (sims) => { const fin = sims.map(s => s.path[s.path.length - 1]); return { p50: E.quantile(fin.map(x => x.EFC), 0.5), p95: E.quantile(fin.map(x => x.EFC), 0.95), zp50: E.quantile(fin.map(x => x.Z_EM), 0.5), distress: fin.filter(x => x.Zone === "Distress").length / fin.length }; };
 out.mc = mcStats(E.monteCarlo(base, pp, { n: inp.mc.n, fuelSd: 0.10, fxSd: 0.08, rho: 0.30, H: inp.H, lgd: 70, gdp: null }));
 const pp4 = Object.assign({}, pp, { revenue_shock_std_devs: -1.0, revenue_sigma: 0.12, revenue_shock_pct: -0.12 });
-const sims4 = E.monteCarlo(base, pp4, { n: inp.mc.n, fuelSd: 0.10, fxSd: 0.08, rho: 0.30, rateSd: 150, revSd: 0.8, correlations: inp.mc.corr, H: inp.H, lgd: 70, gdp: null, eadShare: 0.8 });
+const sims4 = E.monteCarlo(base, pp4, { n: inp.mc.n4, fuelSd: 0.10, fxSd: 0.08, rho: 0.30, rateSd: 150, revSd: 0.8, correlations: inp.mc.corr, H: inp.H, lgd: 70, gdp: null, eadShare: 0.8 });
 out.mc4 = mcStats(sims4);
 { // fuel price path: draws centred on the path peak, the whole path rescaled per draw
   const simsP = E.monteCarlo(base, Object.assign({}, pp, inp.mc.path), { n: inp.mc.n, fuelSd: 0.10, fxSd: 0.08, rho: 0.30, H: inp.H, lgd: 70, gdp: null });
@@ -91,6 +91,11 @@ out.q = inp.qtest.map(q => E.quantile(inp.qvals, q));
 process.stdout.write(JSON.stringify(out, (k, v) => (typeof v === "number" && !Number.isFinite(v) ? null : v)));
 """
 
+
+# The two generators use different random streams, so their medians differ by sampling noise. The 4-variable case
+# sits near the distress boundary (about half the draws), where the median of Z-EM is noisy: at 5,000 draws the
+# gap was 3.1% against the 3% tolerance after C3a, and 0.2% at 50,000. More draws, same tolerances.
+MC4_DRAWS = 20000
 
 CASH_KEYS = ["Net Income", "Current Liabilities", "Current Assets", "Total Assets", "State Compensation Receivable",
              "State Compensation Paid", "Cash Funding Gap", "Interest on New Debt", "New Short-term Debt", "Supplier Arrears",
@@ -202,7 +207,7 @@ def main():
     payload = {
         "engine": str(ROOT / "templates" / "engine.js"), "config": report.config_payload(), "rows": report.rows_payload(raw),
         "keys": keys, "scenarios": scenarios, "cash_keys": CASH_KEYS, "H": H, "gre": gre_cases,
-        "mc": {"entity": "SOE F", "n": 5000, "corr": mc_corr, "path": {"fuel_shock_path": [0.0, 0.6, 0.3]}},
+        "mc": {"entity": "SOE F", "n": 5000, "n4": MC4_DRAWS, "corr": mc_corr, "path": {"fuel_shock_path": [0.0, 0.6, 0.3]}},
         "qvals": qvals, "qtest": qtest, "psd": psd_cases, "labels": labels, "headers": headers, "cells": cells, "texts": texts,
     }
     res = subprocess.run([node, "-e", NODE_RUNNER], input=json.dumps(payload), capture_output=True, text=True, check=True)
@@ -292,7 +297,7 @@ def main():
     print("Monte Carlo (5,000 draws, SOE F, standard stress):", {k: (round(v, 4), round(js["mc"][k], 4)) for k, v in py_mc.items()})
     # four-variable Monte Carlo (rate and revenue drawn, full correlation matrix, EAD 80%)
     pp4 = dict(pp, revenue_shock_std_devs=-1.0, revenue_sigma=0.12, revenue_shock_pct=-0.12)
-    mc4 = shocks.run_monte_carlo(base, pp4, n_sims=5000, fuel_std=0.10, fx_std=0.08, correlation=0.30, horizon_years=H, lgd_pct=70,
+    mc4 = shocks.run_monte_carlo(base, pp4, n_sims=MC4_DRAWS, fuel_std=0.10, fx_std=0.08, correlation=0.30, horizon_years=H, lgd_pct=70,
                                  rate_std_bps=150, revenue_std_sd=0.8, correlations=mc_corr, ead_share=0.8)
     fin4 = mc4[mc4["Projection Year"] == H]
     py4 = {"p50": fin4["EFC"].quantile(0.5), "p95": fin4["EFC"].quantile(0.95), "zp50": fin4["Z_EM"].quantile(0.5), "distress": (fin4["Zone"] == "Distress").mean()}
