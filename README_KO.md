@@ -68,7 +68,7 @@ SENELEC 리뷰 노트의 내용을 반영했습니다. 유가 충격은 비용�
 
 - **Cash waterfall (지급 순서, 기본값 꺼짐)**: Cash & financing 탭의 On/Off 스위치 또는 "+ Cash waterfall" 버튼. 국가별 지급 순서를 고를 수 있습니다(`waterfall_order`: 세네갈/IPP 우선, IPP·연료 동순위, 연료 우선, 가나, 코트디부아르, 사용자 지정 순위). 순서: 세금·법정부담금·운영사 수수료(0순위) → IPP → 연료 → 선순위 이자 → 적립금 → SOE 최소 운영·유지비(O&M floor) → SOE 기타 비용·후순위 채권자. 같은 순위는 청구액 비례로 나눕니다. 실제로 계좌를 거치는 현금 비율은 커버리지 × 준수율 × 단계적 도입(ramp-up)입니다. waterfall은 현금을 만들지 않습니다: 부족분은 차입하지 않고 가장 낮은 순위부터 미지급으로 남기거나(누가 떠안는지는 `shortfall_rule`: SOE, 후순위 채권자, 비례, 정부), 정부가 메웁니다. 미지급금에는 순위별 연체이자가 붙고, 이자를 못 낸 해는 D 등급(부도, PD 100% 또는 40%)이 됩니다. 공급업체 가격 인하·정부 지급 개선은 시나리오 변수입니다. Liquidity 카드에 순위별 미지급표, 정부 부족분 지급, 이자 미지급(부도), 실제 경유 비율, 연체이자, 고객 미수금이 나오고, "Waterfall scenarios and sensitivity" 카드에 검토 의견의 4개 시나리오와 원가회수율 × 준수율, 공공기관 수금률 민감도가 나옵니다.
 - **Tariffs & collections 탭**: 원가회수율(평균 요금 / 총원가; 정부가 메우는 비율 설정), 정부 보전금 미수금 중 유동자산으로 보는 비율(X1에 직접 영향), 고객군별(가계·대형 민간·공공기관) 수금률(미수금은 고객 미수금으로 쌓임), 수요 증가율, 손실률 증가.
-- **PD 방식** (LGD·EAD 아래): 단일 시나리오에서는 기존 등급별 PD(최대 40%), Logistic tail, Full Logistic, 사용자 지정 옵션을 유지합니다. **Monte Carlo는 모든 Z-EM 구간에서 보정된 Full Logistic PD를 사용하며, 오직 기대재정비용(EFC = PD × EAD × LGD)의 분포만 계산합니다.** 실제 부도 발생 난수 추첨, 부도 발생 연도, 실현 손실은 계산하지 않습니다. Monte Carlo에서는 채무상환 미이행 시 PD를 100%로 강제하지 않으며, 해당 상황의 Z-EM을 연속적인 로지스틱 함수에 입력합니다. 세부 내용은 `docs/CHANGES-Full-Logistic-EFC-Only.md`와 `docs/PD_CALIBRATION.md` 참조.
+- **PD 방식** (LGD·EAD 아래): 단일 시나리오에서는 기존 등급별 PD(최대 40%), Logistic tail, Full Logistic, 사용자 지정 옵션을 유지합니다. **Monte Carlo는 20개 등급 PD를 정확히 지나는 경계 있는 Rating-anchored PD 곡선(Z-EM -1.5 이하 40%, 4.9 이상 0.02%로 고정)을 사용하며(단일 Logistic은 민감도), 오직 기대재정비용(EFC = PD × EAD × LGD)의 분포만 계산합니다.** 실제 부도 발생 난수 추첨, 부도 발생 연도, 실현 손실은 계산하지 않습니다. Monte Carlo에서는 채무상환 미이행 시 PD를 100%로 강제하지 않으며, 해당 상황의 Z-EM을 연속 곡선에 입력합니다. 세부 내용은 `docs/PD_FINAL_DECISION.md`와 `docs/PD_CALIBRATION.md` 참조.
 - **차환 (별도 가정, 기본값 0%)**: `refinance_share`. 첫 전망연도에 단기 은행차입(`Short Term Debt` 열, 없으면 near-term maturity share × 총부채)의 설정 비율을 장기 대출로 바꿉니다. 유동부채가 줄고(총부채는 그대로) X1이 오르며, 당좌차월 금리(기본 8%, 노트의 7.5~8.5%)와 장기 금리(기본 5%, 임시값)의 차이만큼 매년 이자가 줄어듭니다.
 - **긴급 정부지원**: *Borrowing cap before emergency support*(부채/자산 상한, 0 = 꺼짐). 연말 총부채/총자산이 상한을 넘는 만큼은 차입하지 못하고 정부가 자본으로 투입합니다(`Emergency Support`, EFC와 별도의 재정 지출). IMF SOE 스트레스 테스트의 조달 순서(현금 → 차입 → 정부 투입)의 마지막 단계입니다.
 - **RMA 대비 고객 부담 비율**(`Tariff Share of RMA`): (수입 − 정부보조금 + 요금 인상분 + pass-through) / (수입 + 연료비 증가분). Option A에서 고객 징수가 충격 후 RMA의 몇 %를 메우는지 보여줍니다. `Government Grants`가 없으면 표시하지 않습니다.
@@ -90,7 +90,7 @@ python tests/check_waterfall_v2.py    # 국가별 순서, 부족분 규칙, 도�
 
 
 ## PD 최종 모형 비교 (2026-10-20)
-- Monte Carlo 기본값은 기본 모형으로 적용한 **Full Logistic PD** (a=-2.18031828, b=-1.10613960).
-- **Smooth rating-anchored**는 기존 Rating PD 20개 대표점을 정확히 보존하는 C1 연속형 **민감도 분석**입니다. 단일 Logistic 식은 아닙니다.
+- Monte Carlo 기본값은 기존 Rating PD 20개 대표점을 정확히 보존하는 C1 연속형 **Rating-anchored PD**이며, Z-EM -1.5 이하는 40%, 4.9 이상은 0.02%로 고정됩니다(외삽 없음). 결정론적 탭은 기존 등급별 PD를 유지합니다.
+- **단일 Logistic**(a=-2.02276962, b=-0.89133626; 상한 없는 minimax, 최대 오차 6.50%p)은 **민감도 분석**입니다. 상한을 둔 이전 적합(a=-2.18031828, b=-1.10613960)은 `scripts/calibrate_pd.py --refit --caps`로 재현합니다.
 - 동일한 충격 경로로 두 모형의 Median/P95 EFC를 비교합니다. P95는 실제 정부 지출이 아니라 예상재정비용의 경로 간 백분위입니다.
 - Monte Carlo에서 채무 미지급을 PD 100%로 덮어쓰지 않으며, 실제 부도/실현손실 난수 추첨은 없습니다. 상세: `docs/PD_FINAL_DECISION.md`.

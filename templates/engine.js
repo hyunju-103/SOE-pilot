@@ -446,9 +446,10 @@
     // the D band: its upper Z bound and PD anchor the logistic tail
     const Z_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], PD_D = CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][3];
     const logistic = (x) => (isNum(x) ? 1 / (1 + Math.exp(-x)) : NaN);
-    // C1 monotone cubic Hermite interpolation in log-odds (PCHIP) with
-    // logit-linear tails. Each of the 20 rating midpoint PDs is an exact anchor.
-    // This is a sensitivity to the full logistic model, not a single logistic.
+    // C1 monotone cubic Hermite interpolation in log-odds (PCHIP), bounded: Z is
+    // clamped to [D anchor, AAA anchor], so there is no extrapolation beyond the
+    // rating table. Each of the 20 rating midpoint PDs is an exact anchor.
+    // This is the primary Monte Carlo PD curve (the single logistic is the sensitivity).
     const anchors = CFG.Z_RATING_TABLE.map(([lo,hi,r,pd]) => ({
       x: lo === null ? hi : hi === null ? lo : (lo+hi)/2,
       y: Math.log(pd/(1-pd))
@@ -472,8 +473,8 @@
     function ratingSmooth(z) {
       if(!isNum(z)) return NaN;
       const n=anchors.length-1;
-      if(z<=anchors[0].x) return logistic(anchors[0].y+derivatives[0]*(z-anchors[0].x));
-      if(z>=anchors[n].x) return logistic(anchors[n].y+derivatives[n]*(z-anchors[n].x));
+      if(z<=anchors[0].x) return logistic(anchors[0].y);     // clamp to the D anchor
+      if(z>=anchors[n].x) return logistic(anchors[n].y);     // clamp to the AAA anchor
       let i=0;while(i<n-1 && z>=anchors[i+1].x)i++;
       const h=hx[i],t=(z-anchors[i].x)/h;
       return logistic((2*t*t*t-3*t*t+1)*anchors[i].y+(t*t*t-2*t*t+t)*h*derivatives[i]
@@ -653,9 +654,10 @@
      *  o: {n, fuelSd, fxSd, rho, rateSd, revSd, correlations, H, lgd, gdp, seed, eadShare}. With only fuel and FX
      *  drawn, the draws are the same as the original two-variable version for the same seed. */
     function monteCarlo(base, p, o) {
-      // The principal Monte Carlo PD is always the full logistic curve.
-      // The rating-anchored curve is evaluated ONLY as same-draw sensitivity.
-      const mcMethod="logistic";
+      // The principal Monte Carlo PD is the bounded rating-anchored curve (rating_smooth);
+      // the single logistic is evaluated on the same draws as a sensitivity.
+      const mcMethod=p.mc_pd_method ? String(p.mc_pd_method) : "rating_smooth";
+      if (mcMethod !== "logistic" && mcMethod !== "rating_smooth") throw new Error("mc_pd_method must be logistic or rating_smooth");
       const mcP = Object.assign({}, p, { pd_method: mcMethod, pd_override_on_missed_service: false });
       const g = rng(o.seed ?? 42), sims = [], n = o.n, H = o.H;
       const corrs = Object.assign({}, o.correlations || {});

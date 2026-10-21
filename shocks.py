@@ -710,10 +710,10 @@ def run_monte_carlo(base_row: pd.Series, params: dict, n_sims: int, fuel_std: fl
     two-variable version for the same seed.
     Returns a LONG-format DataFrame — one row per (simulation, year),
     containing expected costs only (no random default events or realised losses)."""
-    # Comparison on identical Monte Carlo shocks. Full logistic is the default
-    # for the default model specification; rating_smooth is an explicitly labelled
-    # alternative that matches the rating reference anchor PDs.
-    mc_method = str(params.get("mc_pd_method") or "logistic")
+    # Comparison on identical Monte Carlo shocks. The bounded rating-anchored curve
+    # (rating_smooth) is the default and matches the rating PDs at every band
+    # centre; the single logistic is available as a labelled sensitivity.
+    mc_method = str(params.get("mc_pd_method") or "rating_smooth")
     if mc_method not in ("logistic", "rating_smooth"):
         raise ValueError("mc_pd_method must be logistic or rating_smooth")
     params = dict(params, pd_method=mc_method, pd_override_on_missed_service=False)

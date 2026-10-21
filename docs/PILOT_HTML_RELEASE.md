@@ -5,12 +5,12 @@ Published interactive snapshot: `SOE-Fiscal-Risk-Final.html` (header restored to
 ## What is published
 
 - Six-stage model journey and redesigned Monte Carlo cards / output layout.
-- Full logistic PD as the default Monte Carlo expected-fiscal-cost calculation.
-- Smooth rating-anchored PD provided as a comparison / sensitivity analysis.
+- Bounded rating-anchored PD (monotone curve through the 20 rating PDs, held at 40% below Z-EM -1.5 and 0.02% above 4.9) as the default Monte Carlo expected-fiscal-cost calculation; deterministic tabs keep the rating band PD.
+- Single logistic PD provided as a same-draw sensitivity.
 - Cash-flow waterfall, correlated fuel / FX and optional interest / revenue shocks.
 - EFC = PD × EAD × LGD. No Bernoulli default events or realised loss draws.
 - Collapsible Monte Carlo controls and extended calibration information.
-- Revised illustrative logistic calibration (prioritises lower maximum reference-rating PD error).
+- Illustrative uncapped minimax logistic calibration for the sensitivity (a -2.02276962, b -0.89133626; max reference-rating PD error 6.50 pp).
 - Existing navigation, upload functionality, KPI, Z-EM, EFC and reporting views retained in the standalone UI.
 - No person-specific names in page copy.
 
@@ -44,14 +44,14 @@ it differs from the tracked file (only `meta.generated`, the build date, is igno
 
 ## Interpretation
 
-The logistic calibration is illustrative and tied to reference rating PDs, **not** estimated
+The reference rating PDs, and the logistic calibration to them, are illustrative, **not** estimated
 from observed SOE defaults. The displayed P95 EFC is the 95th percentile across simulated
 *expected* costs, **not** an observed government payout or a quantile of realised losses.
 
 ## Monte Carlo, GDP lookup and compact controls (2026-10-20)
 
 - Monte Carlo results use a six-card, two-column arrangement (percentile path and zones; EFC and Z-EM distributions; PD comparison and percentile summary).
-- Cash waterfall and missed-debt-service switches now give conditional effect explanations. The latter is a single-scenario sensitivity and does not override Monte Carlo logistic PD.
+- Cash waterfall and missed-debt-service switches now give conditional effect explanations. The latter is a single-scenario sensitivity and does not override the Monte Carlo PD.
 - Compact On/Off controls no longer stretch to the entire column; the Monte Carlo disclosure is also slimmer.
 - GDP reference lookup: user chooses country and base year, and the browser queries World Bank WDI `NY.GDP.MKTP.CN` (GDP, current local currency, source=2) live. It never invents missing years or an FX conversion.
 - GDP unit selector supports financial-statement units, full LCU, thousands, millions and billions. Results are divided by the uploaded statement unit multiplier before entering the shared GDP state, retaining consistent EFC/GDP ratios.

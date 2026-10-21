@@ -441,7 +441,7 @@ DEFAULT_CASH_SETTINGS = {
     "borrowing_cap_debt_to_assets": 0.0,
 }
 
-# Provenance of the logistic PD coefficients above (shown in the PD-model panel of the HTML tool).
+# Provenance of the logistic PD coefficients above (the Monte Carlo sensitivity; shown in the PD-model panel of the HTML tool).
 # Reproduce with `python scripts/calibrate_pd.py`; old_a / old_b are the earlier capped fit (`--caps`).
 PD_CALIBRATION_META = {
     "fit": "minimax_absolute_pd_deviation",
@@ -974,10 +974,10 @@ PARAMETER_REGISTER = [
        "Task team review: public administrations usually the weakest payer. Sales shares are placeholders; set from the SOE's billing data", "Shock Scenarios"),
     _p("Tariffs and collections", "Demand growth and losses", "0% / 0%", "user",
        "Macro drivers in the task team review; demand growth scales sales and cash costs together, losses cut customer revenue at the same cost", "Shock Scenarios"),
-    _p("Probability of distress", "PD method", f"{DEFAULT_CASH_SETTINGS['pd_method']}; logistic a {DEFAULT_CASH_SETTINGS['pd_logit_a']}, b {DEFAULT_CASH_SETTINGS['pd_logit_b']}", "placeholder",
-       "Calibrated to minimize the maximum absolute percentage-point deviation at the 20 reference rating midpoint anchors; illustrative reference PDs, not realized SOE defaults.", "Shock Scenarios"),
-    _p("Probability of distress", "Monte Carlo expected fiscal cost", "Full logistic PD fixed as core model; smooth rating-anchored sensitivity only; no default-event draws", "design",
-       "Monte Carlo outputs use logistic PD = sigmoid(a+b×Z-EM) for EFC=PD×EAD×LGD; rating-anchored only for side-by-side same-draw comparison; no simulated defaults or realised loss payouts.", "Shock Scenarios (Monte Carlo)"),
+    _p("Probability of distress", "PD method", f"{DEFAULT_CASH_SETTINGS['pd_method']}; logistic sensitivity a {DEFAULT_CASH_SETTINGS['pd_logit_a']}, b {DEFAULT_CASH_SETTINGS['pd_logit_b']}", "placeholder",
+       "Deterministic default is the rating band PD. Logistic coefficients (Monte Carlo sensitivity) minimize the maximum absolute percentage-point deviation at the 20 reference rating midpoint anchors; illustrative reference PDs, not realized SOE defaults.", "Shock Scenarios"),
+    _p("Probability of distress", "Monte Carlo expected fiscal cost", "Bounded rating-anchored PD is the core model; single logistic as same-draw sensitivity; no default-event draws", "design",
+       "Monte Carlo outputs use a monotone curve through the 20 rating band PDs, interpolated in Z-EM between band centres, held at 40% at or below Z-EM -1.5 and 0.02% at or above 4.9, for EFC=PD×EAD×LGD; the single logistic sigmoid(a+b×Z-EM) is a side-by-side same-draw sensitivity; deterministic tabs use the rating band PD; no simulated defaults or realised loss payouts.", "Shock Scenarios (Monte Carlo)"),
     _p("Fuel policy and cash", "IPP purchases, share of operating expense", f"{DEFAULT_CASH_SETTINGS['ipp_cost_share']:.0%} (oil preset {OIL_SHOCK_PRESET['ipp_cost_share']:.0%})", "proxy",
        "SENELEC 2022: purchased electricity ≈ COGS 647.4 bn − fuel 494.9 bn = 152.5 bn, / operating expense 888.5 bn; includes OMVS and imports, "
        "so an upper bound for IPPs alone. Used only to size tier 1 of the waterfall", "Shock Scenarios"),

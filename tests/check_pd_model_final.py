@@ -11,12 +11,16 @@ for lo,hi,r,p in config.Z_RATING_TABLE:
  z=lo if np.isfinite(lo) and not np.isfinite(hi) else hi if not np.isfinite(lo) else (lo+hi)/2
  zs.append(z);pdref.append(p)
  assert abs(anchored_pd(z)-p)<1e-14,(r,z,p,anchored_pd(z))
-# C1 numerical derivative across knots, with allowance for floating precision
-for z in zs:
+# C1 numerical derivative across the interior knots, with allowance for floating precision.
+# The two end anchors (D, AAA) are where the bounded curve is clamped: continuous there, flat beyond, so
+# the slope is allowed to change (one-sided slope on the clamped side must be exactly 0).
+for z in sorted(zs):
  h=1e-5
  l=(anchored_pd(z)-anchored_pd(z-h))/h
  r=(anchored_pd(z+h)-anchored_pd(z))/h
- assert abs(l-r)<1e-4,(z,l,r)
+ if z==min(zs): assert l==0 and r<0,(z,l,r)
+ elif z==max(zs): assert r==0 and l<0,(z,l,r)
+ else: assert abs(l-r)<1e-4,(z,l,r)
 values=[anchored_pd(z) for z in np.linspace(-8,9,25001)]
 assert all(0<y<1 for y in values)
 assert max(np.diff(values))<=1e-12
@@ -44,20 +48,29 @@ for name in ('Z_EM','Total Liabilities','EAD','LGD','EFC_Full_Logistic','EFC_Rat
  assert np.allclose(a1[name],a2[name],rtol=1e-12,atol=1e-12),name
 assert np.allclose(a1['EFC'],a1['EFC_Full_Logistic'])
 assert np.allclose(a2['EFC'],a2['EFC_Rating_Anchored'])
+assert set(a1['MC_PD_Model'])=={'logistic'} and set(a2['MC_PD_Model'])=={'rating_smooth'}
+a0=shocks.run_monte_carlo(base,p,**kw)          # no method requested -> rating_smooth
+assert set(a0['MC_PD_Model'])=={'rating_smooth'} and np.allclose(a0['EFC'],a0['EFC_Rating_Anchored'])
+try: shocks.run_monte_carlo(base,dict(p,mc_pd_method='bogus'),**kw); raise SystemExit('invalid mc_pd_method accepted')
+except ValueError: pass
 assert not any(s in a1.columns for s in ['Default Year','Realised Cost'])
 # JS alternative: expected cost must use the selected PD curve, no realised loss.
-# C1 NOTE: the published snapshot engine hard-codes the logistic MC method (mc_pd_method is ignored), so for now the
-# rating_smooth request must still come back as logistic. C2 changes the MC method and restores the selector assertion.
 payload={'config':report.config_payload(),'base':json.loads(base.to_json()),'params':p,'engine':str(R/'templates/engine.js')}
 runner=r'''const fs=require('fs');const i=JSON.parse(fs.readFileSync(0,'utf8'));const E=require(i.engine).create(i.config);
-const arr=['logistic','rating_smooth'].map(k=>E.monteCarlo(i.base,{...i.params,mc_pd_method:k},{n:6,fuelSd:.05,fxSd:.07,rho:.2,H:2,lgd:70,seed:42}));
+const o={n:6,fuelSd:.05,fxSd:.07,rho:.2,H:2,lgd:70,seed:42};
+const arr=['logistic','rating_smooth'].map(k=>E.monteCarlo(i.base,{...i.params,mc_pd_method:k},o));
+const {mc_pd_method,...noMethod}=i.params;
+const none=E.monteCarlo(i.base,noMethod,o);
+let threw=false;try{E.monteCarlo(i.base,{...i.params,mc_pd_method:'bogus'},o);}catch(e){threw=true;}
+if(!threw)throw Error('invalid mc_pd_method accepted');
 let tested=0;let maxErr=0;
 for(let j=0;j<6;j++)for(let t=0;t<3;t++){
- const x=arr[0][j].path[t],y=arr[1][j].path[t];
- if(x.MC_PD_Model!=='logistic'||y.MC_PD_Model!=='logistic')throw Error('snapshot engine must stay logistic');
+ const x=arr[0][j].path[t],y=arr[1][j].path[t],w=none[j].path[t];
+ if(x.MC_PD_Model!=='logistic')throw Error('logistic request must give logistic');
+ if(y.MC_PD_Model!=='rating_smooth')throw Error('rating_smooth request must give rating_smooth');
+ if(w.MC_PD_Model!=='rating_smooth')throw Error('no method must default to rating_smooth');
  if(Math.abs(x.Z_EM-y.Z_EM)>1e-12)throw Error('different shocks');
- for(const r of [x,y]){
-  const col='EFC_Full_Logistic';
+ for(const [r,col] of [[x,'EFC_Full_Logistic'],[y,'EFC_Rating_Anchored'],[w,'EFC_Rating_Anchored']]){
   maxErr=Math.max(maxErr,Math.abs(r.EFC-r[col]));
   if('Realised Cost' in r)throw Error('realised loss');
   tested++;
@@ -66,4 +79,4 @@ for(let j=0;j<6;j++)for(let t=0;t<3;t++){
 console.log(JSON.stringify({tested,maxErr}));'''
 r=subprocess.run(['node','-e',runner],capture_output=True,text=True,input=json.dumps(payload),check=True)
 assert json.loads(r.stdout)['maxErr']<1e-7
-print('PASS 20 rating anchors, 25k-point monotonicity/C1, 321 Python-JS PD comparisons and MC same-draw selection in both engines.')
+print('PASS 20 rating anchors, 25k-point monotonicity, C1 at interior knots, 321 Python-JS PD comparisons and MC same-draw selection in both engines.')

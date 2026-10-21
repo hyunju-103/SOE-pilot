@@ -1,9 +1,11 @@
-"""Illustrative, monotone C1 logit-cubic curve passing through ALL rating PD anchors.
+"""Illustrative, monotone, bounded logit-cubic curve passing through ALL rating PD anchors.
 
-C1 PCHIP slopes (Fritsch–Butland), operating on log-odds. The outer tails
-continue with the endpoint logit slopes, so the PD stays between 0 and 1.
-This is a rating-preserving *sensitivity*, not a single two-parameter logistic
-or an empirically calibrated default frequency model.
+C1 PCHIP slopes (Fritsch–Butland), operating on log-odds, through the 20 rating
+band centres (finite-band midpoints; AAA and D use their finite edge). Z is
+clamped to [D anchor, AAA anchor] before evaluation, so the PD is the D-band PD
+(40%) at and below the D anchor and the AAA PD (0.02%) at and above the AAA
+anchor: no extrapolation beyond the rating table. This is the primary Monte
+Carlo PD curve; it is not an empirically calibrated default-frequency model.
 """
 from functools import lru_cache
 import math
@@ -47,6 +49,12 @@ def anchors():
     return x,y,tuple(d)
 
 
+def z_bounds():
+    """(lowest, highest) anchor Z: the D-band and AAA-band anchors."""
+    x, _, _ = anchors()
+    return x[0], x[-1]
+
+
 def anchored_pd(z):
     try:
         z=float(z)
@@ -55,10 +63,10 @@ def anchored_pd(z):
     if not math.isfinite(z):
         return float('nan')
     x,y,d=anchors()
-    if z<=x[0]:
-        return _sigmoid(y[0]+d[0]*(z-x[0]))
-    if z>=x[-1]:
-        return _sigmoid(y[-1]+d[-1]*(z-x[-1]))
+    if z<=x[0]:      # clamp to the D anchor: PD held at the D-band PD
+        return _sigmoid(y[0])
+    if z>=x[-1]:     # clamp to the AAA anchor: PD held at the AAA-band PD
+        return _sigmoid(y[-1])
     import bisect
     i=bisect.bisect_right(x,z)-1
     h=x[i+1]-x[i]

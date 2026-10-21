@@ -1,4 +1,4 @@
-"""Report/optionally refit the minimax full-logistic reference PD curve.
+"""Report/optionally refit the minimax logistic reference PD curve (the Monte Carlo sensitivity).
 
 `python scripts/calibrate_pd.py`: report accuracy using installed config.
 `python scripts/calibrate_pd.py --refit`: requires scipy, fit two parameters (uncapped minimax: a -2.02276962, b -0.89133626) and print;

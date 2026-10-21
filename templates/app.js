@@ -724,7 +724,7 @@
       ["01", "SOE financial data", "Financial statements · exposures · government support", "data"],
       ["02", "Economic shocks", "Fuel · FX · interest rates · revenue", "shock"],
       ["03", "Cash-flow waterfall", "Cash gap · financing · arrears · new balance sheet", "cash"],
-      ["04", "Continuous PD", "Altman Z-EM → full logistic probability", "pd"],
+      ["04", "Continuous PD", "Altman Z-EM → rating-anchored probability", "pd"],
       ["05", "Expected fiscal cost", "EFC = PD × EAD × LGD", "efc"],
       ["06", "Monte Carlo", "Correlated draws → median · P95 · distress share", "mc"]
     ];
@@ -741,17 +741,17 @@
     const panels=[
       ["Main assumptions","assume",[
         "Economic shocks follow user-set distributions and correlations.",
-        "PD is a two-parameter logistic of projected Altman Z-EM.",
+        "Monte Carlo PD is a smooth curve through the 20 rating-band PDs, as a function of projected Altman Z-EM; deterministic tabs use the rating band PD.",
         "EAD and LGD are explicit user-controlled exposure and loss assumptions."
       ]],
       ["Key limitations","limits",[
-        "PD coefficients match an illustrative rating table, not observed SOE defaults.",
-        "A single logistic cannot exactly fit all 20 reference PDs.",
+        "PDs come from an illustrative rating table, not observed SOE defaults.",
+        "The 20 reference PDs are an illustrative table; CCC+ and CCC share one PD, so the curve is flat between their centres.",
         "P95 summarizes expected costs under shock paths, not realized state payouts."
       ]],
       ["How to interpret","message",[
         "Follow the chain: shock → cash gap → financial condition → PD → EFC.",
-        "Compare model sensitivity on identical shock draws.",
+        "Compare the single-logistic sensitivity on identical shock draws.",
         "Use outputs for scenario analysis and fiscal-risk discussion."
       ]]
     ];
@@ -1555,7 +1555,7 @@
   const wfOrderItems = (q) => Object.keys(WF_TIER).filter((k) => (k !== "om_floor" || (q.om_floor_share || 0) > 0) && (k !== "junior" || (q.junior_share || 0) > 0) && (k !== "reserve" || (q.reserve_months || 0) > 0));
   const WF_TIER_SET = { statutory: "Rank: taxes, operator", ipp: "Rank: IPPs", fuel: "Rank: fuel and gas", debt: "Rank: debt service", reserve: "Rank: reserve", om_floor: "Rank: O&M floor", residual: "Rank: residual" };
   const WF_RULES = [["soe", "The SOE (own costs above the floor first)"], ["junior", "Junior creditors first"], ["pro_rata", "The SOE and junior creditors pro rata"], ["state", "The State pays it"]];
-  const PD_METHODS = [["rating", "Rating bands (at most 40%)"], ["rating_tail", "Rating bands with a logistic tail (above 40%)"], ["logistic", "Logistic in Z-EM"], ["rating_smooth", "Smooth rating-anchored (C1; sensitivity)"], ["user", "User-specified"]];
+  const PD_METHODS = [["rating", "Rating bands (at most 40%)"], ["rating_tail", "Rating bands with a logistic tail (above 40%)"], ["logistic", "Logistic in Z-EM"], ["rating_smooth", "Rating-anchored curve (bounded; Monte Carlo default)"], ["user", "User-specified"]];
   // arrears columns by tier: [rank key, path column, short label]
   const WF_COLS = [["statutory", "Arrears to Statutory and Operator", "Taxes, operator"], ["ipp", "Arrears to IPPs", "IPPs"], ["fuel", "Arrears to Fuel Suppliers", "Fuel"], ["debt", "Missed Debt Service", "Debt service"],
     ["om_floor", "Arrears on O&M Floor", "O&M floor"], ["ops", "Arrears on Own Operations", "Own operations"], ["junior", "Arrears to Junior Creditors", "Junior creditors"]];
@@ -1680,7 +1680,7 @@
         el("div", { class: "foot" },
           el("div", {}, el("b", {}, "Simplifications. "), "Tax expense is held flat; net income carries the reported figure plus the shock's effect on EBIT and interest; any cash shortfall (losses, unpaid State compensation, trapped VAT) is paid first from the SOE's opening cash where the file reports it (above the floor on the Cash & financing tab), and the rest is borrowed — in current liabilities for the short-term share, otherwise as long-term debt; a later surplus repays short-term debt, then rebuilds the cash drawn; operating expense and revenue are held at base-year values."),
           el("div", {}, el("b", {}, "Cash waterfall, refinancing and emergency support. "), "With the cash waterfall on (Cash & financing tab), the routed share of the SOE's cash (coverage × compliance × ramp-up) is paid out in the country order chosen there: taxes, levies and the operator fee; IPPs and fuel (pari passu or in either order); senior debt service and a reserve; the SOE's O&M floor; then its other costs and junior creditors. Tiers with the same rank share pro rata to their bills. The waterfall creates no cash: after the SOE's own cash, the routed shortfall is not borrowed but left unpaid from the lowest rank up — or paid by the State under that shortfall rule — as current liabilities that carry the late-payment interest set on the tab. A year that ends with debt service unpaid is rated D (optional). A later surplus pays the arrears in priority order and tops up the reserve; cash outside the waterfall is borrowed as before. Refinancing is a separate assumption: the chosen share of short-term bank debt is replaced by long-term loans in the start year, or later once the rating reaches the minimum set — current liabilities fall, total liabilities do not, and the rate difference is saved every year. The no-shock path uses the same policies, so the comparison isolates the shock; the Liquidity card compares the stressed path with and without the waterfall. With a borrowing cap, new borrowing stops where total liabilities would pass that share of total assets and the government injects the rest as equity (emergency support, a direct budget cost)."),
-          el("div", {}, el("b", {}, "Tariffs, collections and PD. "), "The cost-recovery ratio (Tariffs & collections tab) resets customer revenue to that share of full cost; the State compensates the share of the change set there, recognised in revenue and paid in cash at the in-year paid share. Uncollected customer bills become customer arrears, a current asset the SOE funds like any other cash gap. Demand growth scales sales and cash costs together; higher losses cut customer revenue at the same cost. In single-scenario views PD follows the selected rating bands, logistic tail, full logistic, or user method; Monte Carlo always uses a calibrated full logistic curve for expected fiscal cost (PD × EAD × LGD) without drawing actual defaults."),
+          el("div", {}, el("b", {}, "Tariffs, collections and PD. "), "The cost-recovery ratio (Tariffs & collections tab) resets customer revenue to that share of full cost; the State compensates the share of the change set there, recognised in revenue and paid in cash at the in-year paid share. Uncollected customer bills become customer arrears, a current asset the SOE funds like any other cash gap. Demand growth scales sales and cash costs together; higher losses cut customer revenue at the same cost. In single-scenario views PD follows the selected rating bands, logistic tail, full logistic, or user method; Monte Carlo uses the bounded rating-anchored PD curve for expected fiscal cost (PD × EAD × LGD) without drawing actual defaults."),
           el("div", {}, el("b", {}, "Fuel cost split. "), "The fuel-cost change is fuel share × oil linkage × operating expense × the fuel price shock — the slider for the shock years, or the year's value of the fuel price path when one is set (the tariff increase then applies in the path's non-zero years). A tariff increase (policy Option B) is applied first. What is left of the fuel-cost change is shared between customers (tariff pass-through, Case B), the government (compensation share, Case C) and the SOE (the rest, Case A). Government compensation is recognised as revenue when due but arrives as cash only at the in-year paid share; the rest is a receivable on the State."),
           el("div", {}, el("b", {}, "Monte Carlo. "), "Fuel and FX shock magnitudes are always drawn from a correlated normal distribution around their sliders (with a fuel price path, fuel is drawn around the path's peak and each draw rescales the whole path); the interest-rate and revenue shocks are drawn too when their standard deviation is above zero, with the correlations you set. Every other parameter stays at its slider value. The seed is fixed, so identical settings reproduce identical results.")));
       this.fuelCheck();
@@ -1821,10 +1821,10 @@
     /** probability of default: method, parameters and the PD on a missed debt payment (below LGD / EAD) */
     pdFields() {
       // Avoid offering deterministic rating/default controls while the user is viewing
-      // Monte Carlo: those controls do not affect its full-logistic/EFC-only model.
+      // Monte Carlo: those controls do not affect its rating-anchored EFC-only model.
       if (S.sh.view === "mc") return [el("div", {class:"mc-pd-side-note"},
-        el("b",{},"Monte Carlo PD: full logistic"),
-        el("small",{},"Uses each simulated Z-EM, with no 40% rating ceiling and no realised-default draws. See the comparison on the right."))];
+        el("b",{},"Monte Carlo PD: rating-anchored"),
+        el("small",{},"Uses each simulated Z-EM on a smooth curve through the rating band PDs (40% at Z-EM −1.5 and below, 0.02% at 4.9 and above); no realised-default draws. The single logistic is shown as a sensitivity."))];
       const e = S.sh.expo, m = e.pd_method || "rating";
       const ex = el("small", {});
       const showEx = () => {
@@ -1835,11 +1835,11 @@
       const sl2 = (label, k, mn, mx, step, f, help) => fSlider(label, { min: mn, max: mx, step, value: ok(e[k]) ? e[k] : CFG.DEFAULT_CASH_SETTINGS[k], fmt: f, id: "sh-" + k, info: help }, (v) => { e[k] = v; showEx(); this.schedule(); });
       return [
         fSelect("Probability of default (PD)", PD_METHODS, m, (v) => { e.pd_method = v; rebuild(); },
-          { info: "Rating bands: PD by Z-EM rating, at most 40% (rating D). Logistic tail: the same bands, but below the D threshold (Z-EM " + fmt(CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], 1) + ") PD keeps rising along a logistic curve from 40% towards 100%. Logistic: PD = 1 / (1 + e^−(a + b·Z)) for every Z. User: one PD for every year. This selector controls single-scenario views; Monte Carlo always uses full logistic PD for expected fiscal cost." }),
+          { info: "Rating bands: PD by Z-EM rating, at most 40% (rating D). Logistic tail: the same bands, but below the D threshold (Z-EM " + fmt(CFG.Z_RATING_TABLE[CFG.Z_RATING_TABLE.length - 1][1], 1) + ") PD keeps rising along a logistic curve from 40% towards 100%. Logistic: PD = 1 / (1 + e^−(a + b·Z)) for every Z. User: one PD for every year. This selector controls single-scenario views; Monte Carlo uses the bounded rating-anchored PD curve for expected fiscal cost." }),
         m === "rating_tail" || m === "logistic" ? sl2("Logistic slope b", "pd_logit_b", -3, -0.2, 0.01, (v) => fmt(v, 2), "How fast PD rises as Z-EM falls (negative). Calibrated against the current illustrative rating table; update with observed defaults when available.") : null,
         m === "logistic" ? sl2("Logistic intercept a", "pd_logit_a", -5, 1, 0.01, (v) => fmt(v, 2), "Log-odds of default at Z-EM = 0. Calibrated against the existing rating PD table; methodological details in docs/PD_CALIBRATION.md.") : null,
         m === "user" ? sl2("PD (every year)", "pd_user", 0, 1, 0.01, pctAuto, "A PD set by the user, applied to every projection year.") : null,
-        el("div", { class: "fld" }, el("span", { class: "lbl" }, "PD in a year with debt service missed", info("Single-scenario views only: when debt service is unpaid, the year is rated D and its PD can be overridden. Monte Carlo always uses full logistic PD with no override or actual default draws.")),
+        el("div", { class: "fld" }, el("span", { class: "lbl" }, "PD in a year with debt service missed", info("Single-scenario views only: when debt service is unpaid, the year is rated D and its PD can be overridden. Monte Carlo uses its own PD curve with no override or actual default draws.")),
           seg([[1, "100%"], [0.4, "40%"]], (ok(e.pd_on_default) ? e.pd_on_default : 1) >= 1 ? 1 : 0.4, (v) => { e.pd_on_default = v; this.schedule(); }, "PD on default")),
         ex,
       ].filter(Boolean);
@@ -1897,7 +1897,7 @@
       const rating = (z) => E.pdValue(z, E.zRating(z), false, {pd_method:"rating"});
       const zw = [-4,-3,-2,-1,0,1,2,3,4,5], xlo=-5, xhi=5, W=720, ht=244, L=55, R=22, T=14, B=35;
       const x=(z)=>L+(z-xlo)/(xhi-xlo)*(W-L-R), y=(pd)=>ht-B-pd*(ht-B-T);
-      const svg=svgEl("svg",{viewBox:`0 0 ${W} ${ht}`,width:"100%",role:"img", "aria-label":"Full logistic PD is continuous, whereas rating-band PD is a staircase with a 40 percent ceiling"});
+      const svg=svgEl("svg",{viewBox:`0 0 ${W} ${ht}`,width:"100%",role:"img", "aria-label":"Rating-anchored PD is continuous and bounded, the single logistic is a sensitivity, and rating-band PD is a staircase with a 40 percent ceiling"});
       [0,.2,.4,.6,.8,1].forEach((v)=>{
         svgEl("line",{x1:L,x2:W-R,y1:y(v),y2:y(v),class:"grid-l"},svg);
         txt(svg,L-8,y(v),fmt(v*100,0)+"%","t-muted num","end",10.5);
@@ -1923,12 +1923,11 @@
       }));
       const errors = ratingAnchors.map(r=>Math.abs((pred(r.z)-r.ref)*100));
       const maxError=Math.max(...errors), mae=errors.reduce((a,b)=>a+b,0)/errors.length;
-      const meta=CFG.PD_CALIBRATION_META||{};
-      const oldPred=(z)=>E.pdValue(z,E.zRating(z),false,{pd_method:"logistic",pd_logit_a:meta.old_a,pd_logit_b:meta.old_b});
-      const oldMax=Math.max(...ratingAnchors.map(r=>Math.abs((oldPred(r.z)-r.ref)*100)));
-      H.pdLead.textContent=`Full logistic: PD = sigmoid(${fmt(a,5)} ${b<0?"−":"+"} ${fmt(Math.abs(b),5)} × Z-EM). Minimax calibration over ${ratingAnchors.length} reference rating anchors: maximum absolute difference ${fmt(maxError,2)} percentage points (previous ${fmt(oldMax,2)} pp), mean absolute difference ${fmt(mae,2)} pp. Calibrated against illustrative reference PDs; not validated against observed SOE defaults.`;
       const smooth=(z)=>E.pdValue(z,E.zRating(z),false,{pd_method:"rating_smooth"});
-      H.pdTable.replaceChildren(simpleTable(["Rating","Representative Z-EM","Reference PD","Full logistic PD","Smooth anchored PD","Difference (pp)"],ratingAnchors.map(r=>[r.name,fmt(r.z,3),pct(r.ref,3),pct(pred(r.z),3),pct(smooth(r.z),3),sgn((pred(r.z)-r.ref)*100,3)]),{right:i=>i>0,cls:"compact"}));
+      const smoothMax=Math.max(...ratingAnchors.map(r=>Math.abs((smooth(r.z)-r.ref)*100)));
+      const zLo=ratingAnchors.reduce((m,r)=>Math.min(m,r.z),Infinity), zHi=ratingAnchors.reduce((m,r)=>Math.max(m,r.z),-Infinity);
+      H.pdLead.textContent=`Monte Carlo PD: rating-anchored curve through the ${ratingAnchors.length} reference rating PDs (monotone interpolation of log-odds in Z-EM); ${smoothMax<1e-9?"exact at all "+ratingAnchors.length+" band centres":"maximum absolute difference at the band centres "+fmt(smoothMax,2)+" pp"}. Held at ${pct(smooth(zLo-1),0)} below Z-EM ${fmt(zLo,1)} and ${pct(smooth(zHi+1),2)} above ${fmt(zHi,1)}. Sensitivity: single logistic PD = sigmoid(${fmt(a,5)} ${b<0?"−":"+"} ${fmt(Math.abs(b),5)} × Z-EM), minimax fit, maximum absolute difference ${fmt(maxError,2)} pp, mean ${fmt(mae,2)} pp. Reference PDs are illustrative; not validated against observed SOE defaults.`;
+      H.pdTable.replaceChildren(simpleTable(["Rating","Representative Z-EM","Reference PD","Rating-anchored PD (Monte Carlo)","Logistic PD (sensitivity)","Logistic difference (pp)"],ratingAnchors.map(r=>[r.name,fmt(r.z,3),pct(r.ref,3),pct(smooth(r.z),3),pct(pred(r.z),3),sgn((pred(r.z)-r.ref)*100,3)]),{right:i=>i>0,cls:"compact"}));
     },
     buildMC() {
       const st = S.sh.mc, H = this.H;
@@ -1957,13 +1956,13 @@
       const more = el("details",{class:"mc-advanced"},
         el("summary",{},"Rating PD comparison and calibration details"),
         H.pdChart,
-        el("div",{class:"pd-chart-legend"},el("span",{class:"legend-key pd-logistic-key"},"Full logistic"),el("span",{class:"legend-key pd-smooth-key"},"Smooth anchored"),el("span",{class:"legend-key pd-rating-key"},"Original rating steps")),
+        el("div",{class:"pd-chart-legend"},el("span",{class:"legend-key pd-smooth-key"},"Rating-anchored (Monte Carlo)"),el("span",{class:"legend-key pd-logistic-key"},"Single logistic (sensitivity)"),el("span",{class:"legend-key pd-rating-key"},"Rating band steps (deterministic)")),
         H.pdTable,
-        el("p",{class:"note"},"Method: fit the two-parameter logistic by minimizing the largest absolute percentage-point gap across the 20 representative rating anchors. It cannot preserve every reference PD exactly. The smooth rating-anchored sensitivity matches those anchors but is a different model, not a full logistic. Neither is fitted to real SOE default histories."));
-      const pdBox=card("PD model · Monte Carlo", "Full logistic PD is fixed for headline EFC results; the continuous rating-anchored curve is shown only for sensitivity under identical shocks.");
+        el("p",{class:"note"},"Sensitivity: the two-parameter logistic is fitted by minimizing the largest absolute percentage-point gap across the 20 representative rating anchors, so it cannot reproduce every reference PD. Neither curve is fitted to real SOE default histories."));
+      const pdBox=card("PD model · Monte Carlo", "Headline EFC uses the bounded rating-anchored PD curve; the single logistic is shown as a sensitivity under identical shocks.");
       pdBox.body.append(el("div",{class:"mc-model-summary"},
-        el("span",{class:"mc-pill"},"Full logistic · default"),el("span",{class:"mc-pill"},"EFC only"),
-        el("span",{class:"mc-pill"},"No actual default draws")),H.pdLead,H.pdSensitivity,more);
+        el("span",{class:"mc-pill"},"Rating-anchored · default"),el("span",{class:"mc-pill"},"EFC only"),
+        el("span",{class:"mc-pill"},"No actual default draws")),H.pdLead,el("p",{class:"note",style:"margin:0 0 12px"},"Monte Carlo PD is interpolated in Z-EM between rating band centres: it equals the rating PD at each band centre, rises smoothly between them, and is held at 40% below Z-EM −1.5 and 0.02% above 4.9. Deterministic tabs use the rating band PD."),H.pdSensitivity,more);
       H.pdModel=pdBox;
       H.mcnote = el("p", { class: "note" });
       H.mcerr = el("div");
@@ -2041,7 +2040,7 @@
              "See Liquidity & State compensation for cash, arrears and creditor changes.");
         if (H.debtEffectNote) H.debtEffectNote.textContent = !debtOn
           ? "OFF · Missed debt service does not force a D rating or override single-scenario PD."
-          : st.view === "mc" ? "ON · Single-scenario sensitivity only. Monte Carlo does not override logistic PD or sample realised defaults."
+          : st.view === "mc" ? "ON · Single-scenario sensitivity only. Monte Carlo does not override its PD or sample realised defaults."
           : debtMiss ? "ON · At least one year has missed debt service: check the default probability and projection cards for the effect."
           : "ON but no missed debt service occurs with these assumptions; the PD and EFC therefore stay unchanged.";
       }
@@ -2276,10 +2275,10 @@
       const st = S.sh, m = st.mc, H = this.H;
       this.drawPDCalibration(p);
       const fpk = p.fuel_shock_path && p.fuel_shock_path.length ? p.fuel_shock_path.reduce((a, v) => (Math.abs(v) > Math.abs(a) ? v : a), p.fuel_shock_path[0]) : null;
-      H.mcnote.textContent = `PD model: Full logistic (fixed for expected fiscal cost; rating-anchored is comparison only). Mean shocks: fuel ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " (peak of the path)"}, FX ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, interest rate ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, revenue ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + `. EFC = PD × EAD × LGD in each simulated year; the distribution is across expected costs, not realized defaults.`;
+      H.mcnote.textContent = `PD model: bounded rating-anchored curve (single logistic shown as a sensitivity). Mean shocks: fuel ${fpk === null ? pctSig(p.fuel_shock_pct) : pctSig(fpk) + " (peak of the path)"}, FX ${pctSig(p.fx_shock_pct)}` + (m.rsd > 0 ? `, interest rate ${sgn(p.rate_shock_bps, 0)} bps` : "") + (m.vsd > 0 ? `, revenue ${sgn(p.revenue_shock_std_devs, 2)} s.d.` : "") + `. EFC = PD × EAD × LGD in each simulated year; the distribution is across expected costs, not realized defaults.`;
       let sims;
       try {
-        sims = E.monteCarlo(b, { ...p, mc_pd_method: "logistic" }, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });
+        sims = E.monteCarlo(b, { ...p, mc_pd_method: "rating_smooth" }, { n: m.n, fuelSd: m.fsd, fxSd: m.xsd, rho: m.corr["fuel|fx"], rateSd: m.rsd, revSd: m.vsd, correlations: m.corr, H: st.H, lgd: st.lgd, gdp: gs, seed: 42, eadShare: st.ead });
       } catch (e) {
         H.mcerr.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, e.message));
         H.mcres.hidden = true;
@@ -2290,8 +2289,8 @@
       const fin = sims.map((s) => last(s.path));
       const q = (k, x) => E.quantile(fin.map((r) => r[k]), x);
       const modelOutcomes = [
-        { name: "Full logistic", med: q("EFC_Full_Logistic", .5), p95: q("EFC_Full_Logistic", .95), anchor: false },
-        { name: "Smooth rating-anchored", med: q("EFC_Rating_Anchored", .5), p95: q("EFC_Rating_Anchored", .95), anchor: true }
+        { name: "Rating-anchored (Monte Carlo)", med: q("EFC_Rating_Anchored", .5), p95: q("EFC_Rating_Anchored", .95), anchor: true },
+        { name: "Single logistic (sensitivity)", med: q("EFC_Full_Logistic", .5), p95: q("EFC_Full_Logistic", .95), anchor: false }
       ];
       const maxP95 = Math.max(...modelOutcomes.map(x => x.p95), 0.000001);
       H.pdSensitivity.replaceChildren(
@@ -2301,9 +2300,9 @@
             el("div", { class: "mc-compare-track", role: "img", "aria-label": `${x.name} P95 expected fiscal cost ${money(x.p95)}` },
               el("span", { class: x.anchor ? "anchored" : "", style: `width:${Math.max(0, Math.min(100, x.p95 / maxP95 * 100))}%` })),
             el("small", {}, `Median ${money(x.med)} · P95 ${money(x.p95)}`)))),
-        el("p", { class: "note" }, "Both curves use the same simulated shock paths. Differences reflect the PD model, not different economic shocks."));
-      H.mcDashMeta.textContent = `${st.soe} · ${m.n.toLocaleString("en-US")} simulations · ${last(fin)["Calendar Year"]} final year · Full logistic PD`;
-      const p50 = q("EFC_Full_Logistic", 0.5), p95 = q("EFC_Full_Logistic", 0.95), dist = fin.filter((r) => r.Zone === "Distress").length / fin.length;
+        el("p", { class: "note" }, "Both PD curves use the same simulated shock paths. Differences reflect the PD model, not different economic shocks."));
+      H.mcDashMeta.textContent = `${st.soe} · ${m.n.toLocaleString("en-US")} simulations · ${last(fin)["Calendar Year"]} final year · Rating-anchored PD`;
+      const p50 = q("EFC_Rating_Anchored", 0.5), p95 = q("EFC_Rating_Anchored", 0.95), dist = fin.filter((r) => r.Zone === "Distress").length / fin.length;
       const gF = gs ? last(gs) : null;
       put(H.strip,
         tile(`Median EFC, year ${st.H}`, null, null, money(p50), CUR, `${st.soe} · ${m.n.toLocaleString("en-US")} simulations`),
