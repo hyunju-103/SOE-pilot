@@ -69,11 +69,13 @@ with col_load:
             df_up, mapping = data_loader.load_and_standardize(uploaded)
             validation = data_loader.validate_schema(df_up)
             st.session_state.column_mapping = mapping
-            if validation["missing_required"]:
+            if validation["mixed_currency"]:
+                st.session_state.upload_note = ("warn", validation["mixed_currency"])
+            elif validation["missing_required"]:
                 st.session_state.upload_note = ("warn", "Missing required column(s): " + ", ".join(validation["missing_required"])
                                                 + ". Check the column mapping below, rename or add these columns, and upload again.")
             else:
-                df_up = data_loader.coerce_numeric(df_up)
+                df_up, units_note = data_loader.harmonize_units(data_loader.coerce_numeric(df_up))
                 issues = data_loader.numeric_issues(df_up)
                 st.session_state.soe_df = df_up
                 st.session_state.using_sample = False
@@ -81,6 +83,8 @@ with col_load:
                 note = f"✓ Loaded {df_up['Entity'].nunique()} SOE(s), {len(df_up)} SOE-year rows from {uploaded.name}."
                 if not issues.empty:
                     note += f" {len(issues)} row(s) have non-numeric or missing required values — check the data preview below."
+                if units_note:
+                    note += " " + units_note
                 st.session_state.upload_note = ("ok", note)
                 st.rerun()
         except Exception as e:  # noqa: BLE001 — show the reader's message to the user

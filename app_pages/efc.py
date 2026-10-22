@@ -97,7 +97,7 @@ else:
 st.markdown("</div>", unsafe_allow_html=True)
 
 total_efc = result["EFC"].sum()
-currency = df["Currency"].iloc[0] if "Currency" in df.columns else ""
+currency = ov.currency(df)
 n_distress = (result["Zone"] == "Distress").sum()
 
 

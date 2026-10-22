@@ -511,10 +511,12 @@
     Year: Math.trunc(r.Year),
     Sector: /^(utility|utilities|electricity utility)$/i.test(String(r.Sector || "").trim()) ? "Power / Utilities" : (r.Sector || "Other")
   }));
-  function unitScale(u) { u = String(u || "").toLowerCase(); return u.includes("billion") ? 1e9 : u.includes("million") ? 1e6 : u.includes("thousand") ? 1e3 : 1; }
+  function unitScale(u) { return E.unitScale(u); }
 
   function loadDataset(rows, label, example, key) {
-    S.rows = coerceRows(rows);
+    const hz = E.harmonizeUnits(coerceRows(rows)); // one scale for every amount, so portfolio sums add up
+    S.rows = hz.rows;
+    if (key === "upload" && hz.note) S.uploadNote = (S.uploadNote ? S.uploadNote + " " : "") + hz.note;
     S.en = E.enrich(S.rows);
     S.label = label; S.example = !!example; S.key = key;
     if (key !== "upload") {
@@ -833,6 +835,8 @@
         msg.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, `Missing required column(s): ${missing.join(", ")}. Check the column mapping below, rename or add these columns, and upload again.`), mappingDetails({ report: mp.report }));
         return;
       }
+      const mixed = E.currencyMix(rows);
+      if (mixed) { msg.replaceChildren(el("div", { class: "alert-box warn", style: "margin-top:10px" }, mixed), mappingDetails({ report: mp.report })); return; }
       // Attach annual support flows from Grants_detail, never loan stocks or contingent guarantees.
       // The primary sheet wins on any disagreement; the discrepancy is surfaced for review.
       const merged = mergeSupportUpload(rows, uploadExtras);

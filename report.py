@@ -232,6 +232,8 @@ def _main():
         check = data_loader.validate_schema(raw)
         if check["missing_required"]:
             raise SystemExit("Missing required column(s): " + ", ".join(check["missing_required"]))
+        if check["mixed_currency"]:
+            raise SystemExit(check["mixed_currency"])
         label, example = "", False
     elif args.sample:
         raw, label, example = data_loader.sample_dataset(), "Built-in sample: SOE A (Energy), SOE B (Transport)", True
