@@ -172,10 +172,82 @@ def data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
+_UNIT_TOKEN = re.compile(r"'?\d+s?|[a-z]+")  # '000 / (000) / 1,000 -> '000 token; no lookbehind (engine.js must match)
+_UNIT_WORDS = {"billion": 1e9, "billions": 1e9, "bn": 1e9, "bln": 1e9,
+               "million": 1e6, "millions": 1e6, "mn": 1e6, "mln": 1e6, "mio": 1e6, "m": 1e6,
+               "thousand": 1e3, "thousands": 1e3, "k": 1e3, "'000": 1e3, "000": 1e3, "000s": 1e3, "'000s": 1e3}
+
+
+def unit_scale_of(label) -> float:
+    """Multiplier a Units label stands for ('LCU millions' -> 1e6). Whole tokens only, so 'Amount' is 1.
+    Blank/unknown -> 1.0. engine.js unitScale is the same parser."""
+    if label is None or (isinstance(label, float) and np.isnan(label)):
+        return 1.0
+    for t in _UNIT_TOKEN.findall(str(label).lower()):
+        if t in _UNIT_WORDS:
+            return _UNIT_WORDS[t]
+    return 1.0
+
+
+def harmonize_units(df: pd.DataFrame):
+    """Rescale every row's amount columns to the file's main unit (most rows; tie -> larger) and rewrite
+    Units to that label. Blank Units rows are taken as already in it. Returns (df, note); note is ''
+    when nothing needed converting. Idempotent. Same logic as engine.js harmonizeUnits."""
+    if "Units" not in df.columns:
+        return df, ""
+    labels = ["" if pd.isna(u) else str(u).strip() for u in df["Units"]]
+    scales = [unit_scale_of(l) if l else None for l in labels]
+    counts = {}
+    for s in scales:
+        if s is not None:
+            counts[s] = counts.get(s, 0) + 1
+    if len(counts) < 2:
+        return df, ""
+    canon = max(counts, key=lambda s: (counts[s], s))
+    names = {}
+    for l, s in zip(labels, scales):
+        if s == canon:
+            names[l] = names.get(l, 0) + 1
+    label = max(names, key=lambda l: names[l])  # most common; first seen on a tie
+    out = df.copy()
+    factor = pd.Series([1.0 if s is None else s / canon for s in scales], index=out.index)
+    for col in [v["column"] for v in schema.VARIABLES if v["kind"] == "amount"]:
+        if col in out.columns:
+            out[col] = out[col] * factor
+    out["Units"] = label
+    src = {}
+    for l, s in zip(labels, scales):
+        if s is not None and s != canon:
+            src[l] = src.get(l, 0) + 1
+    n = sum(src.values())
+    frm = ", ".join(sorted(src, key=lambda l: -src[l]))  # stable: first seen on a tie
+    return out, f"Units harmonised: {n} row{'' if n == 1 else 's'} converted from {frm} to {label}."
+
+
+def currency_mix(df: pd.DataFrame) -> str:
+    """'' when the file has at most one currency (blanks ignored, case/space-insensitive); otherwise a
+    message grouping entities by currency. Same text as engine.js currencyMix."""
+    if "Currency" not in df.columns:
+        return ""
+    cur = {}
+    for e, c in zip(df["Entity"], df["Currency"]):
+        c = "" if pd.isna(c) else str(c).strip().upper()
+        if c:
+            cur.setdefault(c, set()).add(str(e))
+    if len(cur) < 2:
+        return ""
+    def names(s):
+        s = sorted(s)
+        return ", ".join(s[:5]) + (f", +{len(s) - 5} more" if len(s) > 5 else "")
+    groups = "; ".join(f"{c}: {names(cur[c])}" for c in sorted(cur))
+    return (f"The file mixes currencies ({groups}). Amounts in different currencies cannot be added up — "
+            "split the file by currency or convert to one currency, then upload again.")
+
+
 def validate_schema(df: pd.DataFrame) -> dict:
     """Check df against config.REQUIRED_COLUMNS and OPTIONAL_SHOCK_COLUMNS.
     Returns a dict: {'missing_required': [...], 'missing_optional': [...],
-    'ok': bool}."""
+    'mixed_currency': str ('' or a message), 'ok': bool}."""
     present = set(df.columns)
 
     # 'Sector' is required for cross-SOE sector comparisons but may be
@@ -183,10 +255,12 @@ def validate_schema(df: pd.DataFrame) -> dict:
     missing_required = [c for c in config.REQUIRED_COLUMNS if c not in present]
     missing_optional = [c for c in config.OPTIONAL_SHOCK_COLUMNS if c not in present]
 
+    mixed = currency_mix(df) if "Entity" in present else ""
     return {
         "missing_required": missing_required,
         "missing_optional": missing_optional,
-        "ok": len(missing_required) == 0,
+        "mixed_currency": mixed,
+        "ok": len(missing_required) == 0 and not mixed,
     }
 
 

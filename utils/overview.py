@@ -14,6 +14,7 @@ import pandas as pd
 
 import calculations
 import config
+import data_loader
 import shocks
 from utils.portfolio import latest_per_entity
 
@@ -39,8 +40,7 @@ def ok(v) -> bool:
 
 
 def unit_scale(df: pd.DataFrame) -> float:
-    u = str(df["Units"].dropna().iloc[0]).lower() if "Units" in df.columns and df["Units"].notna().any() else ""
-    return 1e9 if "billion" in u else 1e6 if "million" in u else 1e3 if "thousand" in u else 1.0
+    return data_loader.unit_scale_of(df["Units"].dropna().iloc[0] if "Units" in df.columns and df["Units"].notna().any() else "")
 
 
 def currency(df: pd.DataFrame) -> str:
